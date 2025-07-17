@@ -26,3 +26,6 @@ merges.txt：合并规则
 # 验证
 gpt2的small,medium,large,xl都验证过。可以正常推理，加上合适的sampling，可以让模型有合理的输出。
 
+# 模型框架图
+https://colab.research.google.com/drive/1MR-i2ZxoMuE-SUkhM8iYwYngXhGYlAEB?usp=sharing
+
