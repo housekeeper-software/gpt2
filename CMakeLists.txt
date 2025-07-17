@@ -20,22 +20,12 @@ message(STATUS "PCRE2_FOUND: ${PCRE2_FOUND}")
 message(STATUS "PCRE2_INCLUDE_DIRS: ${PCRE2_INCLUDE_DIR}")
 message(STATUS "PCRE2_LIBRARIES: ${PCRE2_LIBRARIES}")
 
-
-set(DENSE_TENSOR "${THIRD_PARTY_PATH}/tensor/sources")
-
-set(dense_tensor
-    ${DENSE_TENSOR}/safe_tensors.cc
-    ${DENSE_TENSOR}/storage.cc
-    ${DENSE_TENSOR}/tensor.cc
-    ${DENSE_TENSOR}/tensor_string.cc
-)
-
 # 添加你的源代码文件
 # 将你的 .cc 文件列在这里
 file(GLOB_RECURSE SRC ${PROJECT_SRC_ROOT}/*.c*)
 
 # 创建可执行文件
-add_executable(${PROJECT_NAME} ${SRC} ${dense_tensor})
+add_executable(${PROJECT_NAME} ${SRC})
 
 # 设置运行时输出目录
 set_target_properties(${PROJECT_NAME} PROPERTIES
