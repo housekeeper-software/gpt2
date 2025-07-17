@@ -1,7 +1,8 @@
 # gpt2
 gpt2的c++最慢最详细的实现，没有使用任何优化，只使用原始的计算方法，以展示transformer推理的详细过程
 # 依赖
-PCRE2，一个正则表达式开源库，c++标准库中的正则表达式不能完全兼容gpt2的tokennizer表达式，所以引入这个开源库
+PCRE2，一个正则表达式开源库，c++标准库中的正则表达式不能完全兼容gpt2的tokennizer表达式，所以引入这个开源库  
+nlohmann::json：json库，用于解析config.json, vocab.json等  
 # 模型
 可以从 https://huggingface.co/openai-community/gpt2下载到本地，只支持safetensors模型格式。  
 除此之外，还需要vocab.json,merges.txt,config.json  
