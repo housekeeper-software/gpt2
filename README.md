@@ -28,5 +28,5 @@ gpt2的small,medium,large,xl都验证过。可以正常推理，加上合适的s
 
 # 模型框架图
 https://colab.research.google.com/drive/1MR-i2ZxoMuE-SUkhM8iYwYngXhGYlAEB?usp=sharing
-https://github.com/housekeeper-software/gpt2/blob/main/Full_GPT_architecture.png
+![上图](https://i.imgur.com/example.png)
 
