@@ -13,6 +13,7 @@ struct TensorInfo {
   std::vector<int64_t> shape;
   uint8_t *data_ptr;
   size_t data_size;
+  std::shared_ptr<Storage> storage;
 };
 
 class ModelParams {

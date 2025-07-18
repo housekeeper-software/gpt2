@@ -98,7 +98,10 @@ bool ModelParams::save(const std::string &filename) {
     root["__metadata__"] = meta;
   }
   size_t current_offset = 0;
+  std::vector<TensorInfo> vecs;
+  vecs.reserve(tensors.size());
   for (const auto &i : tensors) {
+    vecs.push_back(i.second);
     nlohmann::json info;
     info["dtype"] = i.second.dtype;
     info["shape"] = i.second.shape;
@@ -116,8 +119,8 @@ bool ModelParams::save(const std::string &filename) {
   fwrite(&header_size, 1, sizeof(uint64_t), fp);
   fwrite(header_json.c_str(), 1, header_size, fp);
 
-  for (const auto &i : tensors) {
-    fwrite(i.second.data_ptr, 1, i.second.data_size, fp);
+  for (const auto &i : vecs) {
+    fwrite(i.data_ptr, 1, i.data_size, fp);
   }
   fclose(fp);
   return true;

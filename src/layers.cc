@@ -2,12 +2,12 @@
 #include "cache.h"
 #include "json.hpp"
 #include "sampling.h"
-#include <algorithm> 
+#include <algorithm>
 #include <fstream>
 #include <iosfwd>
 #include <iostream>
 #include <math.h>
-#include <random> 
+#include <random>
 #include <string>
 
 ModelConfig::ModelConfig()
@@ -100,7 +100,7 @@ dense::Tensor Embedding::forward(const dense::Tensor &input) {
       int32_t ix = inp[b * T + t]; // inp[b, t]
       float *w_ix = wp + ix * C;
       for (size_t i = 0; i < C; ++i) {
-        //这里可用 std::memcpy替代，我们只是展示详细的计算过程
+        // 这里可用 std::memcpy替代，我们只是展示详细的计算过程
         out_bt[i] = w_ix[i];
       }
     }
@@ -414,7 +414,7 @@ dense::Tensor CausalSelfAttention::forward(const dense::Tensor &input) {
   if (!ctx_->training && ctx_->cache_) {
     return forward_cache(input);
   }
-  //在训练模式或者没有启用kv cache的情况下，我们处理前向传播
+  // 在训练模式或者没有启用kv cache的情况下，我们处理前向传播
 
   auto B = input.size(0); // 批大小
   auto T = input.size(1); // 序列长度
@@ -432,7 +432,7 @@ dense::Tensor CausalSelfAttention::forward(const dense::Tensor &input) {
   auto att = dense::Tensor::zeros(dense::kFloat32, {T, T});
   auto att_ptr = reinterpret_cast<float *>(att.data());
 
-  //输出张量
+  // 输出张量
   auto y = dense::Tensor::zeros(dense::kFloat32, {B, T, C});
   auto y_ptr = reinterpret_cast<float *>(y.data());
 
@@ -493,12 +493,13 @@ dense::Tensor CausalSelfAttention::forward(const dense::Tensor &input) {
           att_ptr[pos] /= sum;
         }
       }
-      //在推理场景下，dropout不生效
+      // 在推理场景下，dropout不生效
       auto att_out = attn_dropout_->forward(att);
       auto att_out_ptr = reinterpret_cast<float *>(att_out.data());
 
-      //计算 attention @ V，然后再直接赋值到输出的指定位置，这里也包含将多头合并到最终的输出
-      // att_out[T,T] , v [T,head_dim_]
+      // 计算 attention @
+      // V，然后再直接赋值到输出的指定位置，这里也包含将多头合并到最终的输出
+      //  att_out[T,T] , v [T,head_dim_]
       for (size_t i = 0; i < T; ++i) {
         for (size_t j = 0; j < head_dim_; ++j) {
           float sum_a = 0.0f;
@@ -512,15 +513,15 @@ dense::Tensor CausalSelfAttention::forward(const dense::Tensor &input) {
       }
     }
   }
-  //投影
+  // 投影
   y = c_proj_->forward(y);
-  //推理这个dropout依然不起作用
+  // 推理这个dropout依然不起作用
   y = resid_dropout_->forward(y);
   return y;
 }
 
-//如果使能kv cache，在这里处理
-//一般来说，对于自回归的模型第二次输出只有一个token,所以，第二次进入，T=1
+// 如果使能kv cache，在这里处理
+// 一般来说，对于自回归的模型第二次输出只有一个token,所以，第二次进入，T=1
 dense::Tensor CausalSelfAttention::forward_cache(const dense::Tensor &input) {
   auto B = input.size(0); // 批大小
   auto T = input.size(1); // 序列长度
@@ -561,16 +562,16 @@ dense::Tensor CausalSelfAttention::forward_cache(const dense::Tensor &input) {
     }
   }
 
-  //找到这个层的kv cache对象
+  // 找到这个层的kv cache对象
   auto cache = ctx_->cache_->get(index_);
 
-  //将新的token的k，v张量合并到cache中，形成一个完整的张量
-  //对于第二次，T=1，合并之后，cache中的张量就包含所有的token，但是之前的我们不用重复计算
-  //所以在cache下，推理的速度保持不变，不会因为token的增加导致计算变慢
+  // 将新的token的k，v张量合并到cache中，形成一个完整的张量
+  // 对于第二次，T=1，合并之后，cache中的张量就包含所有的token，但是之前的我们不用重复计算
+  // 所以在cache下，推理的速度保持不变，不会因为token的增加导致计算变慢
   cache->update(k, v);
 
-  //我们取出包含全部token的 k，v 张量
-  //但是，查询(Q)的张量依然只有一个token（如果是第二次的话）
+  // 我们取出包含全部token的 k，v 张量
+  // 但是，查询(Q)的张量依然只有一个token（如果是第二次的话）
   k = cache->key_states();   // [B,total_seq_len,C]
   v = cache->value_states(); // [B,total_seq_len,C]
 
@@ -586,11 +587,11 @@ dense::Tensor CausalSelfAttention::forward_cache(const dense::Tensor &input) {
   auto att = dense::Tensor::zeros(dense::kFloat32, {T, total_seq_len});
   auto att_ptr = reinterpret_cast<float *>(att.data());
 
-  //输出张量，这是合并了多头之后的输出形状，等同于输入形状
+  // 输出张量，这是合并了多头之后的输出形状，等同于输入形状
   auto y = dense::Tensor::zeros(dense::kFloat32, {B, T, C});
   auto y_ptr = reinterpret_cast<float *>(y.data());
 
-  //掩码张量，下三角
+  // 掩码张量，下三角
   auto mask_ptr = reinterpret_cast<int8_t *>(mask_.data());
 
   float *q_ptr = reinterpret_cast<float *>(q.data());
@@ -725,15 +726,9 @@ dense::Tensor Block::backward(const dense::Tensor &grad_output) {
   return dense::Tensor();
 }
 
-GPT::GPT(const ModelConfig &config) : config_(config), ctx_(new Context()) {}
-
-GPT::~GPT() = default;
-
-bool GPT::Init(const std::string &filename) {
-
+GPT::GPT(const ModelConfig &config) : config_(config), ctx_(new Context()) {
   wte_ = std::make_unique<Embedding>(ctx_.get(), "wte", config_.vocab_size,
                                      config_.emb_dim, 50256);
-  // gpt2.wpe.weight, 形状: [1024, 768], 类型: float
   wpe_ = std::make_unique<Embedding>(ctx_.get(), "wpe", config_.context_length,
                                      config_.emb_dim);
   dropout_ = std::make_unique<Dropout>(ctx_.get(), "dropout",
@@ -743,26 +738,65 @@ bool GPT::Init(const std::string &filename) {
     auto block = std::make_unique<Block>(ctx_.get(), "h", config_, i);
     h_.emplace_back(std::move(block));
   }
-  // gpt2.ln_f.weight, 形状: [768], 类型: float
-  // gpt2.ln_f.bias, 形状: [768], 类型: float
   ln_f_ =
       std::make_unique<LayerNorm>(ctx_.get(), "ln_f", config_.emb_dim, true);
-  // gpt2.lm_head.weight, 形状: [50257, 768], 类型: float
-  // 注意这里的 lm_head 是共享权重的
   lm_head_ = std::make_unique<Linear>(ctx_.get(), "lm_head", config_.emb_dim,
                                       config_.vocab_size, false);
-
-  if (!filename.empty()) {
-    if (!dense::ModelParams::load(filename, &model_params_)) {
-      return false;
-    }
-    InitPretraining();
-  } else {
-  }
-  return true;
 }
 
-void GPT::save(const std::string &filename) { model_params_.save(filename); }
+GPT::~GPT() = default;
+
+void GPT::from_pretrained(const std::string &filename) {
+  if (!filename.empty()) {
+    if (!dense::ModelParams::load(filename, &model_params_)) {
+      return;
+    }
+    _load_weights();
+  }
+}
+
+void GPT::save(const std::string &filename) {
+  dense::ModelParams model_params;
+  model_params.meta_data = model_params_.meta_data;
+  size_t total_size = 0;
+  total_size += _write_tensor(model_params, "wte.weight", wte_->W_);
+  total_size += _write_tensor(model_params, "wpe.weight", wpe_->W_);
+  total_size += _write_tensor(model_params, "ln_f.weight", ln_f_->W_);
+  total_size += _write_tensor(model_params, "ln_f.bias", ln_f_->b_);
+  for (size_t i = 0; i < h_.size(); ++i) {
+    auto &block = h_[i];
+    std::string prefix = "h." + std::to_string(i) + ".";
+    total_size +=
+        _write_tensor(model_params, prefix + "ln_1.weight", block->ln_1_->W_);
+    total_size +=
+        _write_tensor(model_params, prefix + "ln_1.bias", block->ln_1_->b_);
+    total_size +=
+        _write_tensor(model_params, prefix + "attn.c_attn.weight",
+                      block->attn_->c_attn_->W_.clone().transpose_2d());
+    total_size += _write_tensor(model_params, prefix + "attn.c_attn.bias",
+                                block->attn_->c_attn_->b_);
+    total_size +=
+        _write_tensor(model_params, prefix + "attn.c_proj.weight",
+                      block->attn_->c_proj_->W_.clone().transpose_2d());
+    total_size += _write_tensor(model_params, prefix + "attn.c_proj.bias",
+                                block->attn_->c_proj_->b_);
+    total_size +=
+        _write_tensor(model_params, prefix + "ln_2.weight", block->ln_2_->W_);
+    total_size +=
+        _write_tensor(model_params, prefix + "ln_2.bias", block->ln_2_->b_);
+    total_size += _write_tensor(model_params, prefix + "mlp.c_fc.weight",
+                                block->mlp_->c_fc_->W_.clone().transpose_2d());
+    total_size += _write_tensor(model_params, prefix + "mlp.c_fc.bias",
+                                block->mlp_->c_fc_->b_);
+    total_size +=
+        _write_tensor(model_params, prefix + "mlp.c_proj.weight",
+                      block->mlp_->c_proj_->W_.clone().transpose_2d());
+    total_size += _write_tensor(model_params, prefix + "mlp.c_proj.bias",
+                                block->mlp_->c_proj_->b_);
+  }
+  std::cout << "模型参数总大小: " << total_size << " bytes" << std::endl;
+  model_params.save(filename);
+}
 
 void GPT::enable_cache() {
   if (!ctx_->cache_) {
@@ -854,7 +888,7 @@ std::vector<int> GPT::inference(std::vector<int> tokens, int max_length,
           &result_tokens[0]);
     }
     auto logits = forward(input_tensor);
-    //  [B,T,C]
+    //  【B,T,C]
     auto B = logits.size(0);
     auto T = logits.size(1);
     auto C = logits.size(2);
@@ -897,11 +931,10 @@ dense::Tensor CreateTensor(const dense::TensorInfo &info) {
   return tensor;
 }
 
-void GPT::InitPretraining() {
+void GPT::_load_weights() {
   auto params = model_params_.tensors;
   auto wte_weight = CreateTensor(params.at("wte.weight"));
 
-  // GPT2: token嵌入与输出层共享权重
   wte_->W_ = wte_weight;
   lm_head_->W_ = wte_weight;
 
@@ -945,4 +978,24 @@ void GPT::InitPretraining() {
     block->mlp_->c_proj_->b_ =
         CreateTensor(params.at(prefix + "mlp.c_proj.bias"));
   }
+}
+
+size_t GPT::_write_tensor(dense::ModelParams &model_params,
+                          const std::string &name,
+                          const dense::Tensor &tensor) {
+  if (tensor.numel() == 0) {
+    std::cerr << "Warning: Tensor '" << name << "' is null, skipping write."
+              << std::endl;
+    return 0;
+  }
+
+  dense::TensorInfo info;
+  info.storage = std::make_shared<dense::Storage>(tensor.data_size());
+  info.dtype = dense::dtype_to_string(tensor.dtype());
+  info.shape = tensor.shape();
+  info.data_ptr = info.storage->data();
+  info.data_size = tensor.data_size();
+  std::memcpy(info.storage->data(), tensor.data(), tensor.data_size());
+  model_params.tensors[name] = info;
+  return info.data_size;
 }

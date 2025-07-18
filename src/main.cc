@@ -9,8 +9,8 @@
 
 const std::string kDataDir = "C:/dev/llm/c/gpt/gpt-2/data";
 
-const std::string model_dir = "C:/dev/llm/c/gpt/gpt-2/data/gpt2-medium/";
-const std::string save_model_dir = "C:/dev/llm/c/gpt/gpt-2/model";
+const std::string model_dir = "C:/dev/llm/c/gpt/gpt-2/data/gpt2-small/";
+const std::string save_model_dir = "C:/dev/llm/c/gpt/gpt-c/model";
 const char kVocabFile[] = "vocab.json";
 const char kMergesFile[] = "merges.txt";
 const char kModelFile[] = "model.safetensors";
@@ -68,7 +68,8 @@ int main() {
 
   GPT gpt(config);
 
-  gpt.Init(model_dir + kModelFile);
+  gpt.from_pretrained(model_dir + kModelFile);
+  //gpt.save(save_model_dir + "/gpt2-small.safetensors");
 
   SamplingChain smpl;
   smpl.add(std::make_unique<PenaltiesSampling>(512, 1.1f, 0.05f, 0.0f));

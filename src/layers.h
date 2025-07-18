@@ -251,7 +251,7 @@ class GPT {
 public:
   GPT(const ModelConfig &config);
   ~GPT();
-  bool Init(const std::string &filename);
+  void from_pretrained(const std::string &filename);
 
   void save(const std::string &filename);
 
@@ -282,7 +282,11 @@ public:
   std::unique_ptr<Linear> lm_head_;
 
 private:
-  void InitPretraining();
+  void _load_weights();
+
+  static size_t _write_tensor(dense::ModelParams &model_params,
+                              const std::string &name,
+                              const dense::Tensor &tensor);
   ModelConfig config_;
   dense::ModelParams model_params_;
   std::unique_ptr<Context> ctx_;
