@@ -854,7 +854,7 @@ std::vector<int> GPT::inference(std::vector<int> tokens, int max_length,
           &result_tokens[0]);
     }
     auto logits = forward(input_tensor);
-    //  【B,T,C]
+    //  [B,T,C]
     auto B = logits.size(0);
     auto T = logits.size(1);
     auto C = logits.size(2);
@@ -901,6 +901,7 @@ void GPT::InitPretraining() {
   auto params = model_params_.tensors;
   auto wte_weight = CreateTensor(params.at("wte.weight"));
 
+  // GPT2: token嵌入与输出层共享权重
   wte_->W_ = wte_weight;
   lm_head_->W_ = wte_weight;
 
