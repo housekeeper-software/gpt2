@@ -10,8 +10,10 @@ namespace dense {
 namespace {
 
 thread_local std::mt19937 generator(std::random_device{}());
-thread_local std::normal_distribution<double> normal_dist(0.0, 1.0); //标准正态分布
-thread_local std::uniform_real_distribution<> uniform_real_dis(0, 1); //均匀分布
+thread_local std::normal_distribution<double> normal_dist(0.0,
+                                                          1.0); // 标准正态分布
+thread_local std::uniform_real_distribution<> uniform_real_dis(0,
+                                                               1); // 均匀分布
 
 std::vector<size_t> calculate_stride(const std::vector<int64_t> &shape) {
   if (shape.empty()) {
@@ -165,6 +167,8 @@ void Tensor::allocate(Storage *storage) {
   }
 }
 
+void Tensor::zero_() { memset(data(), 0, data_size()); }
+
 Tensor Tensor::from_blob(DType dtype, const std::vector<int64_t> &shape,
                          void *data) {
   Tensor tensor = Tensor(dtype, shape);
@@ -280,7 +284,6 @@ Tensor Tensor::blank(DType dtype, const std::vector<int64_t> &shape) {
   return tensor;
 }
 
-
 size_t Tensor::numel() const {
   return std::accumulate(std::begin(shape_), std::end(shape_), 1,
                          std::multiplies<>());
@@ -337,4 +340,106 @@ Tensor Tensor::transpose_2d() {
   stride_ = calculate_stride(shape_);
   return *this;
 }
+
+// A的形状[M, K]，B的形状[K, N]，C的形状[M, N]
+void matmul(const float *A, size_t A_stride, const float *B, size_t B_stride,
+            const float *bias, float *C, size_t C_stride, size_t M, size_t K,
+            size_t N) {
+  for (size_t m = 0; m < M; ++m) {
+    for (size_t n = 0; n < N; ++n) {
+      float sum = bias ? bias[n] : 0.0f;
+      for (size_t k = 0; k < K; ++k) {
+        sum += A[m * A_stride + k] * B[k * B_stride + n];
+      }
+      C[m * C_stride + n] = sum;
+    }
+  }
+}
+
+// A的形状[K,M],B的形状[K,N],C的形状[M,N]
+void matmul_A_transpose(const float *A, size_t A_stride, const float *B,
+                        size_t B_stride, const float *bias, float *C,
+                        size_t C_stride, size_t K, size_t M, size_t N) {
+
+  for (size_t m = 0; m < M; ++m) {
+    for (size_t n = 0; n < N; ++n) {
+      float sum = bias ? bias[n] : 0.0f;
+      for (size_t k = 0; k < K; ++k) {
+        sum += A[k * A_stride + m] * B[k * B_stride + n];
+      }
+      C[m * C_stride + n] = sum;
+    }
+  }
+}
+
+// A的形状[M,K],B的形状[N,K],C的形状[M,N]
+void matmul_B_transpose(const float *A, size_t A_stride, const float *B,
+                        size_t B_stride, const float *bias, float *C,
+                        size_t C_stride, size_t M, size_t N, size_t K) {
+
+  for (size_t m = 0; m < M; ++m) {
+    for (size_t n = 0; n < N; ++n) {
+      float sum = bias ? bias[n] : 0.0f;
+      for (size_t k = 0; k < K; ++k) {
+        sum += A[m * A_stride + k] * B[n * B_stride + k];
+      }
+      C[m * C_stride + n] = sum;
+    }
+  }
+}
+
+// A的形状是[K,M],B的形状是[N,K],C的形状是[M,N]
+void matmul_A_B_transpose(const float *A, size_t A_stride, const float *B,
+                          size_t B_stride, const float *bias, float *C,
+                          size_t C_stride, size_t K, size_t M, size_t N) {
+
+  // m-n-k 循环顺序：直接计算每个C[m,n]的完整值
+  for (size_t m = 0; m < M; ++m) {
+    for (size_t n = 0; n < N; ++n) {
+      float sum = bias ? bias[n] : 0.0f;
+      for (size_t k = 0; k < K; ++k) {
+        sum += A[k * A_stride + m] * B[n * B_stride + k];
+      }
+      C[m * C_stride + n] = sum;
+    }
+  }
+}
+
+void mat_softmax_forward(float *A, size_t M, size_t N) {
+  for (size_t m = 0; m < M; ++m) {
+    auto A_bt = A + m * N;
+    float maxval = -INFINITY;
+    for (size_t n = 0; n < N; ++n) {
+      if (A_bt[n] > maxval) {
+        maxval = A_bt[n];
+      }
+    }
+
+    float sum = 0.0f;
+    for (size_t n = 0; n < N; ++n) {
+      A_bt[n] = std::expf(A_bt[n] - maxval);
+      sum += A_bt[n];
+    }
+    for (size_t n = 0; n < N; ++n) {
+      A_bt[n] /= sum;
+    }
+  }
+}
+
+void mat_softmax_backward(float *dout, const float *inp, const float *din,
+                          size_t M, size_t N) {
+  for (size_t m = 0; m < M; ++m) {
+    auto inp_bt = inp + m * N;
+    auto din_bt = din + m * N;
+    auto dout_bt = dout + m * N;
+    float sum = 0.0f;
+    for (size_t n = 0; n < N; ++n) {
+      sum += (din_bt[n] * inp_bt[n]);
+    }
+    for (size_t n = 0; n < N; ++n) {
+      dout_bt[n] = inp_bt[n] * (din_bt[n] - sum);
+    }
+  }
+}
+
 } // namespace dense

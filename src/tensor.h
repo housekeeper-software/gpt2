@@ -82,6 +82,8 @@ public:
 
   void allocate(Storage *storage = nullptr);
 
+  void zero_();
+
 private:
   DType dtype_;
   std::vector<int64_t> shape_;
@@ -89,6 +91,43 @@ private:
   uint8_t *data_;
   std::shared_ptr<Storage> storage_;
 };
+
+// 标准矩阵乘法 C = A × B
+// A的形状[M, K]，B的形状[K, N]，C的形状[M, N]
+// bias的形状是[N]，如果有偏置则添加到输出中
+void matmul(const float *A, size_t A_stride, const float *B, size_t B_stride,
+            const float *bias, float *C, size_t C_stride, size_t M, size_t K,
+            size_t N);
+
+// A转置矩阵乘法 C = A^T × B
+// A的形状[K,M],B的形状[K,N],C的形状[M,N]
+// bias的形状是[N]，如果有偏置则添加到输出中
+void matmul_A_transpose(const float *A, size_t A_stride, const float *B,
+                        size_t B_stride, const float *bias, float *C,
+                        size_t C_stride, size_t K, size_t M, size_t N);
+
+// B转置矩阵乘法 C = A × B^T
+// A的形状[M,K],B的形状[N,K],C的形状[M,N]
+// bias的形状是[N]，如果有偏置则添加到输出中
+void matmul_B_transpose(const float *A, size_t A_stride, const float *B,
+                        size_t B_stride, const float *bias, float *C,
+                        size_t C_stride, size_t M, size_t N, size_t K);
+
+// A和B都转置的矩阵乘法 C = A^T × B^T
+// A的形状是[K,M],B的形状是[N,K],C的形状是[M,N]
+// bias的形状是[N]，如果有偏置则添加到输出中
+void matmul_A_B_transpose(const float *A, size_t A_stride, const float *B,
+                          size_t B_stride, const float *bias, float *C,
+                          size_t C_stride, size_t K, size_t M, size_t N);
+
+// 二维张量计算softmax
+void mat_softmax_forward(float *A, size_t M, size_t N);
+
+// dout:是输出梯度
+// inp: 是 mat_softmax_forward 前向传播输出
+// din: 是输入梯度
+void mat_softmax_backward(float *dout, const float *inp, const float *din,
+                          size_t M, size_t N);
 
 } // namespace dense
 
