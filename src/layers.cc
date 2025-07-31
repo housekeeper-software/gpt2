@@ -262,13 +262,6 @@ dense::Tensor Linear::backward(const dense::Tensor &grad_output) {
   // grad_W_ 的形状: [D_out, D_in] (梯度矩阵)
   // b_ 的形状: [D_out] (偏置向量)
 
-  if (!grad_W_.is_defined()) {
-    grad_W_ = dense::Tensor::zeros(W_.dtype(), W_.shape());
-  }
-  if (!grad_b_.is_defined()) {
-    grad_b_ = dense::Tensor::zeros(b_.dtype(), b_.shape());
-  }
-
   auto input = input_cache_; // 前向时的输入
 
   auto B = input.size(0); // 批次大小
