@@ -27,6 +27,14 @@ public:
   bool qkv_bias;
 };
 
+using Group = std::tuple<std::string, dense::Tensor, dense::Tensor>;
+using GradGroup = std::tuple<std::string, dense::Tensor, dense::Tensor>;
+
+struct ParamsAndGrads {
+  std::vector<Group> weights;
+  std::vector<GradGroup> grads;
+};
+
 class Layer;
 
 class Context {
@@ -91,7 +99,6 @@ public:
   std::string name() const override { return "Embedding"; }
 
 private:
-  void LazyInit();
   dense::Tensor input_cache_;
   int64_t num_embeddings_;
   int64_t embedding_dim_;
@@ -111,7 +118,6 @@ public:
   std::string name() const override { return "Linear"; }
 
 private:
-  void LazyInit();
   int64_t in_features_;
   int64_t out_features_;
   bool has_bias_;
@@ -130,7 +136,6 @@ public:
   std::string name() const override { return "LayerNorm"; }
 
 private:
-  void LazyInit();
   int64_t ndim_; // 存储维度大小
   bool has_bias_;
   dense::Tensor input_cache_;
@@ -150,6 +155,7 @@ public:
 
 private:
   dense::Tensor input_cache_;
+
   GELU(const GELU &) = delete;
   GELU &operator=(const GELU &) = delete;
 };
@@ -216,9 +222,17 @@ public:
 
 private:
   dense::Tensor forward_cache(const dense::Tensor &input);
+  void header_forward(float *q, size_t q_stride, float *k, size_t k_stride,
+                      float *v, size_t v_stride, dense::Tensor &att, float *out,
+                      size_t out_stride, size_t b, size_t h);
+  void header_backward(dense::Tensor &qkv, dense::Tensor &grad_qkv,
+                       dense::Tensor &grad_input, dense::Tensor &grad_att,
+                       size_t b, size_t h);
+
   size_t index_;
-  dense::Tensor cached_q_, cached_k_, cached_v_;
-  dense::Tensor cached_att_before_softmax_, cached_att_after_dropout_;
+  float scale_;
+  dense::Tensor cached_qkv_;
+  dense::Tensor cached_att_after_softmax_, cached_att_after_dropout_;
   CausalSelfAttention(const CausalSelfAttention &) = delete;
   CausalSelfAttention &operator=(const CausalSelfAttention &) = delete;
 };
@@ -239,12 +253,53 @@ public:
   std::unique_ptr<MLP> mlp_;
 
 private:
-  dense::Tensor
-      shortcut_1_cache_; // 缓存第一个残差连接的 shortcut (即原始 input)
-  dense::Tensor shortcut_2_cache_; // 缓存第二个残差连接的 shortcut (即 attn_
-                                   // output + shortcut_1_cache_)
   Block(const Block &) = delete;
   Block &operator=(const Block &) = delete;
+};
+
+class LogSoftmaxCrossEntropyLoss {
+public:
+  LogSoftmaxCrossEntropyLoss();
+  ~LogSoftmaxCrossEntropyLoss();
+  // target，如果是[B,T]，则类型为 int64_t，否则就是 float32 的
+  // one-hot编码，形如[B,T,C]
+  double forward(const dense::Tensor &input, const dense::Tensor &target);
+  dense::Tensor backward();
+
+private:
+  dense::Tensor cached_y_true_;  // 缓存真实标签 (one-hot 编码)
+  dense::Tensor cached_softmax_; // 缓存 Softmax 概率 (用于反向传播的简化)
+};
+
+class AdamW {
+public:
+  // 构造函数：初始化优化器参数
+  AdamW(double learning_rate = 1e-4, double beta1 = 0.9, double beta2 = 0.999,
+        double epsilon = 1e-8, double weight_decay = 0.01);
+
+  // 更新模型参数的方法
+  // params_and_grads 包含了所有可训练参数及其梯度
+  void update(ParamsAndGrads &params_and_grads);
+
+  void set_learning_rate(double lr) { lr_ = lr; }
+  double get_learning_rate() const { // 可以添加一个获取当前学习率的方法
+    return lr_;
+  }
+
+private:
+  void ensure_state(int group_idx, int param_idx, const dense::Tensor &param);
+
+  double lr_;
+  double beta1_;
+  double beta2_;
+  double epsilon_;
+  double weight_decay_;
+  int step_; // 时间步，用于偏差修正
+
+  // 存储每个参数的第一次矩估计 (m)
+  std::vector<std::vector<dense::Tensor>> m_states_;
+  // 存储每个参数的第二次矩估计 (v)
+  std::vector<std::vector<dense::Tensor>> v_states_;
 };
 
 class GPT {
@@ -252,6 +307,9 @@ public:
   GPT(const ModelConfig &config);
   ~GPT();
   void from_pretrained(const std::string &filename);
+
+  // 训练模式，需要初始化权重
+  void init_weights();
 
   void save(const std::string &filename);
 
@@ -266,6 +324,12 @@ public:
   std::vector<int> inference(std::vector<int> tokens, int max_length,
                              SamplingChain *chain,
                              std::function<bool(int)> token_callback = nullptr);
+
+  void get_params_and_grads(ParamsAndGrads &params_and_grads);
+
+  void clear_grads();
+
+  dense::Tensor backward(const dense::Tensor &grad_output);
 
   dense::Tensor shared_weight_;
   // token 嵌入
@@ -289,6 +353,6 @@ private:
                               const dense::Tensor &tensor);
   ModelConfig config_;
   dense::ModelParams model_params_;
-  std::unique_ptr<Context> ctx_;
+  Context ctx_;
 };
 #endif
