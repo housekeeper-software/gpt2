@@ -17,11 +17,14 @@ merges.txt：合并规则
 5.safe_tensors.h/cc:实现加载 huggingface safetensors模型参数  
 6.storage.h/cc:内存管理  
 7.tensor.h/cc:一个极其简单的张量对象，保存张量的形状和数据类型  
+8.data_loadh/cc: 加载训练数据  
+9.training.h/cc: 训练模型
 
 # 功能实现
 1.只实现单次推理  
 2.完整的tokenizer 编码和解码实现  
 3.比较丰富的sampling实现  
+4.支持从头开始训练
 
 # 验证
 gpt2的small,medium,large,xl都验证过。可以正常推理，加上合适的sampling，可以让模型有合理的输出。
