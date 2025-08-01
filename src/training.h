@@ -15,8 +15,9 @@ const double kDefaultMinDelta = 1e-4; // 认为验证准确率有改善的最小
 std::map<std::string, std::vector<double>>
 train(GPT *model, DataLoader *X_train_data_loader,
       DataLoader *X_test_data_loader, LogSoftmaxCrossEntropyLoss *loss_func,
-      AdamW *optimizer, int epochs, const std::string &model_dir, int T_0 = 10,
-      int T_mult = 2, double eta_min = 1e-6, int eval_interval = 1,
+      AdamW *optimizer, int epochs, const std::string &model_dir,
+      int accumulation_steps = 1, int T_0 = 10, int T_mult = 2,
+      double eta_min = 1e-6, int eval_interval = 1,
       int patience = kDefaultPatience, double min_delta = kDefaultMinDelta);
 
 #endif // TRAINING_H_

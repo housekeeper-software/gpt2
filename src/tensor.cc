@@ -167,7 +167,10 @@ void Tensor::allocate(Storage *storage) {
   }
 }
 
-void Tensor::zero_() { memset(data(), 0, data_size()); }
+void Tensor::zero_() {
+  allocate();
+  memset(data(), 0, data_size());
+}
 
 Tensor Tensor::from_blob(DType dtype, const std::vector<int64_t> &shape,
                          void *data) {
@@ -415,7 +418,7 @@ void mat_softmax_forward(float *A, size_t M, size_t N) {
 
     float sum = 0.0f;
     for (size_t n = 0; n < N; ++n) {
-      A_bt[n] = std::expf(A_bt[n] - maxval);
+      A_bt[n] = std::exp(A_bt[n] - maxval);
       sum += A_bt[n];
     }
     for (size_t n = 0; n < N; ++n) {

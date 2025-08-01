@@ -124,7 +124,7 @@ void test_logsoftmax_crossentroy() {
   std::cout << output.to_string() << std::endl;
 }
 
-//#define INFERENCE
+// #define INFERENCE
 
 int main() {
 #if 0
@@ -217,7 +217,7 @@ int main() {
   AdamW optimizer;
   gpt.init_weights();
   train(&gpt, &train_data_loader, &test_data_loader, &loss, &optimizer, 10,
-        save_model_dir);
+        save_model_dir, 4);
 #endif
   return 0;
 }

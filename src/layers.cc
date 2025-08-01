@@ -1291,19 +1291,19 @@ GPT::GPT(const ModelConfig &config) : config_(config) {
 GPT::~GPT() = default;
 
 void GPT::init_weights() {
-  wte_->W_.allocate();
+  wte_->W_.zero_();
   lm_head_->W_ = wte_->W_;
 
   for (auto &layer : ctx_.layers) {
     if (layer->instance_name() == "lm_head") {
-      // lm_head 不需要初始化
+      // lm_head 不需要初始化，因为它与嵌入层共享权重，我们在嵌入层初始化即可
       continue;
     }
     if (layer->W_.is_defined()) {
-      layer->W_.allocate();
+      layer->W_.zero_();
     }
     if (layer->b_.is_defined()) {
-      layer->b_.allocate();
+      layer->b_.zero_();
     }
 
     if (layer->name() == "Linear") {
@@ -1334,7 +1334,7 @@ void GPT::init_weights() {
 void GPT::from_pretrained(const std::string &filename) {
   if (!filename.empty()) {
     if (!dense::ModelParams::load(filename, &model_params_)) {
-      return;
+      throw std::runtime_error("加载预训练权重文件失败");
     }
     _load_weights();
   }
@@ -1418,18 +1418,13 @@ dense::Tensor GPT::forward(const dense::Tensor &input) {
   auto pos_emb = wpe_->forward(pos);
   auto tok_pos_emb = dense::Tensor::zeros_like(tok_emb);
 
-  auto C = tok_pos_emb.size(-1);
   {
+    auto N = tok_pos_emb.numel();
     auto tok_ptr = reinterpret_cast<float *>(tok_emb.data());
     auto pos_ptr = reinterpret_cast<float *>(pos_emb.data());
-    auto out = reinterpret_cast<float *>(tok_pos_emb.data());
-    for (size_t i = 0; i < B; ++i) {
-      for (size_t j = 0; j < T; ++j) {
-        for (size_t k = 0; k < C; ++k) {
-          size_t idx = i * T * C + j * C + k;
-          out[idx] = tok_ptr[idx] + pos_ptr[idx];
-        }
-      }
+    auto out_ptr = reinterpret_cast<float *>(tok_pos_emb.data());
+    for (size_t i = 0; i < N; ++i) {
+      out_ptr[i] = tok_ptr[i] + pos_ptr[i];
     }
   }
 
@@ -1442,6 +1437,45 @@ dense::Tensor GPT::forward(const dense::Tensor &input) {
   x = ln_f_->forward(x);
   auto logits = lm_head_->forward(x);
   return logits;
+}
+
+dense::Tensor GPT::backward(const dense::Tensor &grad_output) {
+  auto grad = lm_head_->backward(grad_output);
+  grad = ln_f_->backward(grad);
+
+  // 3. Transformer Block 层 `h_` 的反向传播（逆序遍历）
+  // 从最后一个 Block 开始，到第一个 Block
+  for (int64_t i = h_.size() - 1; i >= 0; --i) {
+    auto &block = h_[i];
+    // 每个 block 的 backward 接收来自上一个 block（或 ln_f_）的梯度，并返回对该
+    // block 输入的梯度
+    grad = block->backward(grad);
+  }
+
+  // grad 此时是损失对 (tok_emb + pos_emb) 之后，dropout 之前的输出的梯度
+  grad = dropout_->backward(grad);
+
+  // 5. 词嵌入和位置嵌入的反向传播
+  // dropout_ 的输入是 tok_emb_cache_ + pos_emb_cache_
+  // 因此，grad （即 dL/d_(tok_emb+pos_emb)）需要分别传递给 tok_emb 和 pos_emb
+  // dL/d_tok_emb = dL/d_(tok_emb+pos_emb)
+  // dL/d_pos_emb = dL/d_(tok_emb+pos_emb)
+  auto grad_tok_emb = grad;
+  auto grad_pos_emb = grad;
+
+  // wte_ (Embedding) 的 backward
+  // wte_ 的 backward 接收 dL/d_tok_emb
+  auto grad_input =
+      wte_->backward(grad_tok_emb); // 这是损失对原始 token input 的梯度
+
+  // wpe_ (Embedding) 的 backward
+  // wpe_ 的 backward 接收 dL/d_pos_emb
+  // 注意：pos_emb 是通过位置索引生成的，通常位置嵌入不需要计算对原始 `pos`
+  // 索引的梯度， 而是直接更新 `wpe_` 自身的权重。这里调用 `wpe_->backward`
+  // 即可。
+  wpe_->backward(grad_pos_emb); // 对位置嵌入权重的梯度会在这里计算
+
+  return grad_input;
 }
 
 std::vector<int> GPT::inference(std::vector<int> tokens, int max_length,
@@ -1603,43 +1637,4 @@ void GPT::get_params_and_grads(ParamsAndGrads &params_and_grads) {
     params_and_grads.grads.emplace_back(
         GradGroup{layer->instance_name(), layer->grad_W_, layer->grad_b_});
   }
-}
-
-dense::Tensor GPT::backward(const dense::Tensor &grad_output) {
-  auto grad = lm_head_->backward(grad_output);
-  grad = ln_f_->backward(grad);
-
-  // 3. Transformer Block 层 `h_` 的反向传播（逆序遍历）
-  // 从最后一个 Block 开始，到第一个 Block
-  for (int64_t i = h_.size() - 1; i >= 0; --i) {
-    auto &block = h_[i];
-    // 每个 block 的 backward 接收来自上一个 block（或 ln_f_）的梯度，并返回对该
-    // block 输入的梯度
-    grad = block->backward(grad);
-  }
-
-  // grad 此时是损失对 (tok_emb + pos_emb) 之后，dropout 之前的输出的梯度
-  grad = dropout_->backward(grad);
-
-  // 5. 词嵌入和位置嵌入的反向传播
-  // dropout_ 的输入是 tok_emb_cache_ + pos_emb_cache_
-  // 因此，grad （即 dL/d_(tok_emb+pos_emb)）需要分别传递给 tok_emb 和 pos_emb
-  // dL/d_tok_emb = dL/d_(tok_emb+pos_emb)
-  // dL/d_pos_emb = dL/d_(tok_emb+pos_emb)
-  auto grad_tok_emb = grad;
-  auto grad_pos_emb = grad;
-
-  // wte_ (Embedding) 的 backward
-  // wte_ 的 backward 接收 dL/d_tok_emb
-  auto grad_input =
-      wte_->backward(grad_tok_emb); // 这是损失对原始 token input 的梯度
-
-  // wpe_ (Embedding) 的 backward
-  // wpe_ 的 backward 接收 dL/d_pos_emb
-  // 注意：pos_emb 是通过位置索引生成的，通常位置嵌入不需要计算对原始 `pos`
-  // 索引的梯度， 而是直接更新 `wpe_` 自身的权重。这里调用 `wpe_->backward`
-  // 即可。
-  wpe_->backward(grad_pos_emb); // 对位置嵌入权重的梯度会在这里计算
-
-  return grad_input;
 }

@@ -12,9 +12,9 @@ float evaluate(GPT *model, DataLoader *test_data_loader,
   int num_batches = 0;
   for (const auto &batch : *test_data_loader) {
     auto X = batch.first;
-    auto Y = batch.second;
+    auto target = batch.second;
     auto logits = model->forward(X);
-    auto loss = loss_func->forward(logits, Y);
+    auto loss = loss_func->forward(logits, target);
     total_loss += loss;
     num_batches++;
   }
@@ -27,9 +27,9 @@ float evaluate(GPT *model, DataLoader *test_data_loader,
 std::map<std::string, std::vector<double>>
 train(GPT *model, DataLoader *X_train_data_loader,
       DataLoader *X_test_data_loader, LogSoftmaxCrossEntropyLoss *loss_func,
-      AdamW *optimizer, int epochs, const std::string &model_dir, int T_0,
-      int T_mult, double eta_min, int eval_interval, int patience,
-      double min_delta) {
+      AdamW *optimizer, int epochs, const std::string &model_dir,
+      int accumulation_steps, int T_0, int T_mult, double eta_min,
+      int eval_interval, int patience, double min_delta) {
   // 1. 初始化
   std::map<std::string, std::vector<double>> history;
   double best_val_loss = std::numeric_limits<double>::max();
@@ -57,41 +57,62 @@ train(GPT *model, DataLoader *X_train_data_loader,
     // --- 训练阶段 ---
     double running_loss = 0.0;
     int batch_count = 0;
+    model->clear_grads();
+    double accumulated_loss = 0.0;
+
     // 遍历训练数据加载器中的所有批次
     for (auto &batch : *X_train_data_loader) {
       auto X = batch.first;
-      auto Y = batch.second;
+      auto target = batch.second;
 
-      // 步骤 A: 前向传播
-      // `trainning=true` 会启用 Dropout 等层
       auto logits = model->forward(X);
-      // 步骤 B: 计算损失和初始梯度
-      // 使用外部的 loss_func 计算损失值
-
-      auto loss = loss_func->forward(logits, Y);
-      //  手动计算损失函数关于 logits 的梯度，这是手动反向传播的起点
+      auto loss = loss_func->forward(logits, target);
       auto grad_loss = loss_func->backward();
 
-      // 步骤 C: 反向传播
-      // 清除上一轮的梯度
-      model->clear_grads();
-      // 从 dL/d_logits 开始，将梯度反向传播到模型的所有参数
+      if (accumulation_steps > 1) {
+        // 在进行反向传播之前，将梯度除以累积步数
+        // 这样可以确保在累积梯度后，更新的幅度与一个大批次更新的幅度大致相同
+        auto N = grad_loss.numel();
+        auto ptr = reinterpret_cast<float *>(grad_loss.data());
+        for (size_t i = 0; i < N; ++i) {
+          ptr[i] = ptr[i] / accumulation_steps;
+        }
+      }
       model->backward(grad_loss);
 
-      // 步骤 D: 参数更新
-      // 获取所有参数及其计算出的梯度
-      ParamsAndGrads params_and_grads;
-      model->get_params_and_grads(params_and_grads);
-      // 使用优化器更新参数
-      optimizer->update(params_and_grads);
-
-      running_loss += loss;
+      accumulated_loss += loss;
       batch_count++;
 
-      // 定期打印训练信息
-      std::cout << "  Batch " << batch_count << " / "
-                << ", Train Loss: " << loss << std::endl;
+      std::cout << "Epoch:" << epoch + 1 << ",Batch:" << batch_count
+                << ", Training Loss: " << loss << std::endl;
+
+      if (batch_count % accumulation_steps == 0) {
+        ParamsAndGrads params_and_grads;
+        model->get_params_and_grads(params_and_grads);
+        // 使用优化器更新参数
+        optimizer->update(params_and_grads);
+        model->clear_grads();
+
+        running_loss += accumulated_loss / accumulation_steps;
+
+        std::cout << "Epoch:" << epoch + 1 << ",Batch:" << batch_count
+                  << ", Training Loss (accumulated): "
+                  << accumulated_loss / accumulation_steps << std::endl;
+
+        // 重置累积损失
+        accumulated_loss = 0.0;
+      }
     }
+
+    // 处理最后一个不完整的梯度累积批次
+    if (batch_count % accumulation_steps != 0) {
+      ParamsAndGrads params_and_grads;
+      model->get_params_and_grads(params_and_grads);
+      optimizer->update(params_and_grads);
+      model->clear_grads();
+      running_loss += accumulated_loss / (batch_count % accumulation_steps);
+    }
+
     double avg_train_loss = running_loss / batch_count;
     history["train_loss"].push_back(avg_train_loss);
     std::cout << "Epoch " << epoch + 1
