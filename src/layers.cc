@@ -1135,11 +1135,11 @@ double LogSoftmaxCrossEntropyLoss::forward(const dense::Tensor &input,
         // z_k-z_max
         z_shift[k] = in_bt[k] - z_max;
         // e^(z_k-z_max)
-        exp_sum += std::expf(z_shift[k]);
+        exp_sum += std::exp(z_shift[k]);
       }
 
       // log_sum_exp = log(sum(e^(z_k-z_max)))
-      float log_sum_exp = std::logf(exp_sum);
+      float log_sum_exp = std::log(exp_sum);
 
       double sum_of_products = 0.0f;
       for (size_t k = 0; k < C; ++k) {
@@ -1147,7 +1147,7 @@ double LogSoftmaxCrossEntropyLoss::forward(const dense::Tensor &input,
         auto pred_log_softmax = z_shift[k] - log_sum_exp;
         // cached_softmax_bt: pred_log_softmax 再取指数就还原为 softmax 值
         // 所以 cached_softmax_bt 存储的是 Softmax 计算值，用于反向传播
-        cached_softmax_bt[k] = std::expf(pred_log_softmax);
+        cached_softmax_bt[k] = std::exp(pred_log_softmax);
         // sum(y_k* (pred_log_softmax))
         sum_of_products += y_true_bt[k] * pred_log_softmax;
       }
@@ -1160,11 +1160,6 @@ double LogSoftmaxCrossEntropyLoss::forward(const dense::Tensor &input,
 }
 
 dense::Tensor LogSoftmaxCrossEntropyLoss::backward() {
-  /*
-    反向传播梯度计算
-    dL/dx = (p_i - y_i) / N
-  */
-
   auto B = cached_softmax_.size(0); // 批大小
   auto T = cached_softmax_.size(1); // token数
   auto C = cached_softmax_.size(2); // 类别数
@@ -1406,9 +1401,9 @@ dense::Tensor GPT::forward(const dense::Tensor &input) {
   if (is_enable_cache()) {
     current_pos = ctx_.cache_->get_seq_length();
   }
-  for (size_t i = 0; i < B; ++i) {
-    for (size_t j = 0; j < T; ++j) {
-      pos_data[i * T + j] = current_pos + static_cast<int32_t>(j);
+  for (size_t b = 0; b < B; ++b) {
+    for (size_t t = 0; t < T; ++t) {
+      pos_data[b * T + t] = current_pos + static_cast<int32_t>(t);
     }
   }
 
@@ -1460,20 +1455,17 @@ dense::Tensor GPT::backward(const dense::Tensor &grad_output) {
   // 因此，grad （即 dL/d_(tok_emb+pos_emb)）需要分别传递给 tok_emb 和 pos_emb
   // dL/d_tok_emb = dL/d_(tok_emb+pos_emb)
   // dL/d_pos_emb = dL/d_(tok_emb+pos_emb)
-  auto grad_tok_emb = grad;
-  auto grad_pos_emb = grad;
 
   // wte_ (Embedding) 的 backward
   // wte_ 的 backward 接收 dL/d_tok_emb
-  auto grad_input =
-      wte_->backward(grad_tok_emb); // 这是损失对原始 token input 的梯度
+  auto grad_input = wte_->backward(grad); // 这是损失对原始 token input 的梯度
 
   // wpe_ (Embedding) 的 backward
   // wpe_ 的 backward 接收 dL/d_pos_emb
   // 注意：pos_emb 是通过位置索引生成的，通常位置嵌入不需要计算对原始 `pos`
   // 索引的梯度， 而是直接更新 `wpe_` 自身的权重。这里调用 `wpe_->backward`
   // 即可。
-  wpe_->backward(grad_pos_emb); // 对位置嵌入权重的梯度会在这里计算
+  wpe_->backward(grad); // 对位置嵌入权重的梯度会在这里计算
 
   return grad_input;
 }
