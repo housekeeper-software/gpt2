@@ -25,6 +25,8 @@ public:
   int64_t n_layers;
   float drop_rate;
   bool qkv_bias;
+  float expansion_ratio;
+  float ln_epsilon;
 };
 
 using Group = std::tuple<std::string, dense::Tensor, dense::Tensor>;
@@ -129,13 +131,14 @@ private:
 class LayerNorm : public Layer {
 public:
   LayerNorm(Context *ctx, const std::string &instance_name, int64_t ndim,
-            bool has_bias = false);
+            float epsilon = 1e-05, bool has_bias = false);
   ~LayerNorm() override;
   dense::Tensor forward(const dense::Tensor &input) override;
   dense::Tensor backward(const dense::Tensor &grad_output) override;
   std::string name() const override { return "LayerNorm"; }
 
 private:
+  float epsilon_;
   int64_t ndim_; // 存储维度大小
   bool has_bias_;
   dense::Tensor input_cache_;
@@ -223,8 +226,8 @@ public:
 private:
   dense::Tensor forward_cache(const dense::Tensor &input);
   void header_forward(float *q, size_t q_stride, float *k, size_t k_stride,
-                      float *v, size_t v_stride, dense::Tensor &att, float *out,
-                      size_t out_stride, size_t b, size_t h);
+                      float *v, size_t v_stride, float *out, size_t out_stride,
+                      dense::Tensor &att, size_t b, size_t h);
   void header_backward(dense::Tensor &qkv, dense::Tensor &grad_qkv,
                        dense::Tensor &grad_input, dense::Tensor &grad_att,
                        size_t b, size_t h);
@@ -261,13 +264,13 @@ class LogSoftmaxCrossEntropyLoss {
 public:
   LogSoftmaxCrossEntropyLoss();
   ~LogSoftmaxCrossEntropyLoss();
-  // target，如果是[B,T]，则类型为 int64_t，否则就是 float32 的
+  // target，如果是[B,T]，则类型为 int32_t，否则就是 float32 的
   // one-hot编码，形如[B,T,C]
   double forward(const dense::Tensor &input, const dense::Tensor &target);
   dense::Tensor backward();
 
 private:
-  dense::Tensor cached_y_true_;  // 缓存真实标签 (one-hot 编码)
+  dense::Tensor cached_target_;  // 缓存真实标签 (one-hot 编码)
   dense::Tensor cached_softmax_; // 缓存 Softmax 概率 (用于反向传播的简化)
 };
 

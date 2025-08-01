@@ -50,7 +50,7 @@ public:
   static Tensor ones(DType dtype, const std::vector<int64_t> &shape);
   static Tensor randn(DType dtype, const std::vector<int64_t> &shape);
   static Tensor rand(DType dtype, const std::vector<int64_t> &shape);
-  static Tensor blank(DType dtype, const std::vector<int64_t> &shape);
+  static Tensor zeros_like(const Tensor& other);
 
   uint8_t *data() { return data_; }
 
@@ -91,6 +91,11 @@ private:
   uint8_t *data_;
   std::shared_ptr<Storage> storage_;
 };
+
+/*
+  以下矩阵乘法，对于输出使用的是累积，
+  以便支持累积梯度更新，所以，当不需要累积的时候，需要对输出先清零
+*/
 
 // 标准矩阵乘法 C = A × B
 // A的形状[M, K]，B的形状[K, N]，C的形状[M, N]

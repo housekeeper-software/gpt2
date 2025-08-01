@@ -278,10 +278,8 @@ Tensor Tensor::rand(DType dtype, const std::vector<int64_t> &shape) {
   return tensor;
 }
 
-Tensor Tensor::blank(DType dtype, const std::vector<int64_t> &shape) {
-  Tensor tensor(dtype, shape);
-  tensor.allocate();
-  return tensor;
+Tensor Tensor::zeros_like(const Tensor &other) {
+  return Tensor::zeros(other.dtype(), other.shape());
 }
 
 size_t Tensor::numel() const {
@@ -351,7 +349,7 @@ void matmul(const float *A, size_t A_stride, const float *B, size_t B_stride,
       for (size_t k = 0; k < K; ++k) {
         sum += A[m * A_stride + k] * B[k * B_stride + n];
       }
-      C[m * C_stride + n] = sum;
+      C[m * C_stride + n] += sum;
     }
   }
 }
@@ -367,7 +365,7 @@ void matmul_A_transpose(const float *A, size_t A_stride, const float *B,
       for (size_t k = 0; k < K; ++k) {
         sum += A[k * A_stride + m] * B[k * B_stride + n];
       }
-      C[m * C_stride + n] = sum;
+      C[m * C_stride + n] += sum;
     }
   }
 }
@@ -383,7 +381,7 @@ void matmul_B_transpose(const float *A, size_t A_stride, const float *B,
       for (size_t k = 0; k < K; ++k) {
         sum += A[m * A_stride + k] * B[n * B_stride + k];
       }
-      C[m * C_stride + n] = sum;
+      C[m * C_stride + n] += sum;
     }
   }
 }
@@ -400,7 +398,7 @@ void matmul_A_B_transpose(const float *A, size_t A_stride, const float *B,
       for (size_t k = 0; k < K; ++k) {
         sum += A[k * A_stride + m] * B[n * B_stride + k];
       }
-      C[m * C_stride + n] = sum;
+      C[m * C_stride + n] += sum;
     }
   }
 }
@@ -437,7 +435,7 @@ void mat_softmax_backward(float *dout, const float *inp, const float *din,
       sum += (din_bt[n] * inp_bt[n]);
     }
     for (size_t n = 0; n < N; ++n) {
-      dout_bt[n] = inp_bt[n] * (din_bt[n] - sum);
+      dout_bt[n] = (inp_bt[n] * (din_bt[n] - sum));
     }
   }
 }

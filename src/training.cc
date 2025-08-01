@@ -14,10 +14,7 @@ float evaluate(GPT *model, DataLoader *test_data_loader,
     auto X = batch.first;
     auto Y = batch.second;
     auto logits = model->forward(X);
-    // 使用与训练时相同的损失函数来计算验证损失，确保一致性
-
     auto loss = loss_func->forward(logits, Y);
-
     total_loss += loss;
     num_batches++;
   }

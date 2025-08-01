@@ -36,7 +36,7 @@ std::vector<dense::Tensor> tensor_split(const dense::Tensor &A,
 
   std::vector<dense::Tensor> result;
   for (size_t i = 0; i < ncount; ++i) {
-    auto t = dense::Tensor::blank(A.dtype(), {B, T, split_size});
+    auto t = dense::Tensor::zeros(A.dtype(), {B, T, split_size});
     result.emplace_back(std::move(t));
   }
 
@@ -65,7 +65,8 @@ std::vector<dense::Tensor> tensor_split(const dense::Tensor &A,
 
 ModelConfig::ModelConfig()
     : vocab_size(50257), context_length(1024), emb_dim(768), n_heads(12),
-      n_layers(12), drop_rate(0.1), qkv_bias(true) {}
+      n_layers(12), drop_rate(0.1), qkv_bias(true), expansion_ratio(4.0f),
+      ln_epsilon(1e-05) {}
 ModelConfig::~ModelConfig() = default;
 ModelConfig::ModelConfig(const ModelConfig &) = default;
 ModelConfig &ModelConfig::operator=(const ModelConfig &) = default;
@@ -88,6 +89,9 @@ bool ModelConfig::InitFromFile(const std::string &config_file) {
     n_heads = config_json.at("n_head").get<int64_t>();
     n_layers = config_json.at("n_layer").get<int64_t>();
     drop_rate = config_json.at("attn_pdrop").get<float>();
+    if (config_json.contains("layer_norm_epsilon")) {
+      ln_epsilon = config_json.at("layer_norm_epsilon").get<float>();
+    }
   } catch (const std::exception &e) {
     std::cerr << "Error parsing config file: " << e.what() << std::endl;
     return false;
@@ -112,7 +116,7 @@ Embedding::Embedding(Context *ctx, const std::string &instance_name,
                      int64_t padding_idx)
     : Layer(ctx, instance_name), num_embeddings_(num_embeddings),
       embedding_dim_(embedding_dim), padding_idx_(padding_idx) {
-  // 嵌入层有可学习参数 W_
+  // 嵌入层有可学习参数 W_（嵌入矩阵）
   ctx_->Register(this);
   // WTE[50276,768],WPE[1024,768]
   W_ = dense::Tensor(dense::kFloat32, {num_embeddings_, embedding_dim_});
@@ -128,10 +132,10 @@ dense::Tensor Embedding::forward(const dense::Tensor &input) {
     throw std::runtime_error("输入张量的类型必须是:kInt32");
   }
 
-  // input的形状限定为 [B,T]
+  // input 的形状限定为 [B,T]
   // 输出形状为 [B,T,C]
   // WTE is (vocab_size,C) ->[50257,768],token嵌入矩阵
-  // WPE is (maxT,C)->[1024,768],位置嵌入矩阵
+  // WPE is (max_token,C)->[1024,768],位置嵌入矩阵
 
   if (is_training()) {
     input_cache_ = input.clone();
@@ -143,25 +147,23 @@ dense::Tensor Embedding::forward(const dense::Tensor &input) {
 
   auto output = dense::Tensor::zeros(dense::kFloat32, {B, T, C});
 
+  auto out_ptr = reinterpret_cast<float *>(output.data());
   auto in_ptr = reinterpret_cast<const int32_t *>(input.data());
   auto w_ptr = reinterpret_cast<float *>(W_.data());
-  auto out_ptr = reinterpret_cast<float *>(output.data());
 
   // 如果 input[0,0] = 10
   // 将嵌入矩阵的行索引=10的那个特征向量(C)复制给输出的[0,0]所在行
-
   for (size_t b = 0; b < B; ++b) {
     for (size_t t = 0; t < T; ++t) {
-      // out[b,t,:]
-      auto out_bt = out_ptr + b * T * C + t * C;
-      int32_t ix = in_ptr[b * T + t]; // inp[b, t]
-      // ix 是嵌入索引
-      // 将wp的指针移动到 ix 索引对应的行开始位置
-      float *w_ix = w_ptr + ix * C;
+      auto out_bt = out_ptr + b * T * C + t * C; // output[b,t,:]
+      auto idx = in_ptr[b * T + t];              // input[b, t]
+      // idx 是嵌入索引
+      // 将 w_ptr 的指针移动到 idx 索引对应的行开始位置
+      auto w_idx = w_ptr + idx * C;
       // 将嵌入矩阵的这个特征向量复制给输出
       for (size_t i = 0; i < C; ++i) {
         // 这里可用 std::memcpy替代，我们只是展示详细的计算过程
-        out_bt[i] = w_ix[i];
+        out_bt[i] = w_idx[i];
       }
     }
   }
@@ -169,35 +171,35 @@ dense::Tensor Embedding::forward(const dense::Tensor &input) {
 }
 
 dense::Tensor Embedding::backward(const dense::Tensor &grad_output) {
-  // grad_output形状: [批次，token长度，嵌入维度],比如这里[1,7,768]
+  // grad_output形状: [B,T,C],比如这里[1,7,768]
   // 计算的核心过程是将输入的索引映射到嵌入矩阵的行上，并累加梯度
   // 比如 T[t]=1,则需要将梯度累加到 W_[1,:] 上
-  // 反向传播之前，需要将 grad_W_ 清零
-
-  auto input_ids = input_cache_; //[B,T]
-  auto B = input_ids.size(0);
-  auto T = input_ids.size(1);
-  auto C = W_.size(-1); // 嵌入维度，比如768
 
   if (!grad_W_.is_defined()) {
-    grad_W_ = dense::Tensor::zeros(dense::kFloat32, W_.shape());
+    grad_W_ = dense::Tensor::zeros_like(W_);
   }
 
-  auto in_ptr = reinterpret_cast<const int32_t *>(input_ids.data());
+  auto input = input_cache_; //[B,T]
+
+  auto B = input.size(0);
+  auto T = input.size(1);
+  auto C = W_.size(-1); // 嵌入维度，比如768
+
+  auto in_ptr = reinterpret_cast<const int32_t *>(input.data());
   auto grad_out_ptr = reinterpret_cast<const float *>(grad_output.data());
   auto grad_w_ptr = reinterpret_cast<float *>(grad_W_.data());
 
   // grad_W_形状: [50257,768]或者[1024,768],这里是累加梯度
   for (size_t b = 0; b < B; ++b) {
     for (size_t t = 0; t < T; ++t) {
-      int32_t ix = in_ptr[b * T + t]; // 获取输入的索引
-      if (ix < 0 || ix >= num_embeddings_) {
+      auto idx = in_ptr[b * T + t]; // 获取输入的索引
+      if (idx < 0 || idx >= num_embeddings_) {
         continue; // 忽略无效索引
       }
       auto grad_out_bt = grad_out_ptr + b * T * C + t * C;
-      auto grad_w_ix = grad_w_ptr + ix * C;
+      auto grad_w_idx = grad_w_ptr + idx * C;
       for (size_t i = 0; i < C; ++i) {
-        grad_w_ix[i] += grad_out_bt[i]; // 累加梯度
+        grad_w_idx[i] += grad_out_bt[i]; // 累加梯度
       }
     }
   }
@@ -213,7 +215,6 @@ Linear::Linear(Context *ctx, const std::string &instance_name,
   // 线性层有可学习参数 W_,b_(if has_bias_=true)
   ctx_->Register(this);
   // torch::nn::Linear 的权重形状是 [out_features, in_features]
-  // GPT2 官方参数的形状是[in_features,out_features]，所以我们在加载时先做了转置
   W_ = dense::Tensor(dense::kFloat32, {out_features_, in_features_});
 
   if (has_bias) {
@@ -224,33 +225,36 @@ Linear::Linear(Context *ctx, const std::string &instance_name,
 Linear::~Linear() = default;
 
 dense::Tensor Linear::forward(const dense::Tensor &input) {
-  // 这里输入 input的形状是 [batch_size, seq_len,in_features]
-  // 权重 weight_ 的形状是 [out_features, in_features]
-  // 输出 output 的形状是 [batch_size, seq_len,out_features]
+  // 这里输入 input的形状是 [B, T,D_in]
+  // 输出 output 的形状是 [B, T,D_out]
 
   auto B = input.size(0);
   auto T = input.size(1);
-  auto C = input.size(2);
-  auto OC = W_.size(0);
+  auto D_in = input.size(2);
+  auto D_out = W_.size(0); //[D_out, D_in]
 
   if (is_training()) {
+    // 反向传播计算要用到
     input_cache_ = input.clone();
   }
 
-  auto output = dense::Tensor::zeros(input.dtype(), {B, T, OC});
+  // output 必须清零，matmul_B_transpose 实现的是累积，不是直接赋值
+  auto output = dense::Tensor::zeros(input.dtype(), {B, T, D_out});
 
   auto in_ptr = reinterpret_cast<const float *>(input.data());
   auto w_ptr = reinterpret_cast<float *>(W_.data());
   auto b_ptr = reinterpret_cast<float *>(b_.data());
   auto out_ptr = reinterpret_cast<float *>(output.data());
 
-  // Y = x @ W.T + b
+  // Y = X @ W^T + b
   for (size_t b = 0; b < B; ++b) {
-    // 每个批次都执行相同的乘法
-    auto inp_bt = in_ptr + b * T * C;    // 输入的第 b 个批次
-    auto outp_bt = out_ptr + b * T * OC; // 输出的第 b 个批次
-    dense::matmul_B_transpose(inp_bt, C, w_ptr, C, has_bias_ ? b_ptr : nullptr,
-                              outp_bt, OC, T, OC, C);
+    // 每个批次都执行相同的矩阵乘法
+    auto inp_bt = in_ptr + b * T * D_in;    // 输入的第 b 个批次
+    auto outp_bt = out_ptr + b * T * D_out; // 输出的第 b 个批次
+    // inp_bt[T,C],outp_bt[T,OC]
+    dense::matmul_B_transpose(inp_bt, D_in, w_ptr, D_in,
+                              has_bias_ ? b_ptr : nullptr, outp_bt, D_out,
+                              T /*M*/, D_out /*N*/, D_in /*K*/);
   }
   return output;
 }
@@ -259,43 +263,59 @@ dense::Tensor Linear::backward(const dense::Tensor &grad_output) {
   // grad_output 的形状: [B,T,D_out] (来自上游的损失对 Y 的梯度)
   // X (input_cache_) 的形状: [B,T, D_in] (前向时的输入)
   // W_ 的形状: [D_out, D_in] (权重矩阵)
-  // grad_W_ 的形状: [D_out, D_in] (梯度矩阵)
   // b_ 的形状: [D_out] (偏置向量)
+
+  if (!grad_W_.is_defined()) {
+    // grad_W_ 的形状: [D_out, D_in] (权重梯度矩阵)
+    grad_W_ = dense::Tensor::zeros_like(W_);
+  }
+  if (!grad_b_.is_defined()) {
+    // grad_b_ 的形状: [D_out] (偏置梯度向量)
+    grad_b_ = dense::Tensor::zeros_like(b_);
+  }
 
   auto input = input_cache_; // 前向时的输入
 
-  auto B = input.size(0); // 批次大小
-  auto T = input.size(1); // 序列长度
-
-  int64_t D_out = grad_output.size(-1); // 输出维度
-  int64_t D_in = input.size(-1);        // 输入维度
+  auto B = input.size(0);            // 批次大小
+  auto T = input.size(1);            // 序列长度
+  auto D_in = input.size(-1);        // 输入维度
+  auto D_out = grad_output.size(-1); // 输出维度
 
   auto grad_out_ptr = reinterpret_cast<const float *>(grad_output.data());
   auto in_ptr = reinterpret_cast<const float *>(input.data());
   auto grad_w_ptr = reinterpret_cast<float *>(grad_W_.data());
   auto w_ptr = reinterpret_cast<float *>(W_.data());
 
+  // grad_input 的形状: [B,T,D_in]
+  // 返回给上一层的梯度，形状应当与前向传播输入(input)一致
   auto grad_input = dense::Tensor::zeros(dense::kFloat32, {B, T, D_in});
   auto grad_in_ptr = reinterpret_cast<float *>(grad_input.data());
 
-  // 计算对 W_的梯度，这里包含转置乘法，公式是: grad_W = grad_output^T @ X
-  // 在具体计算时，并没有按照转置之后再做乘法，而是直接顺序乘法，然后累加到grad_W_相应的位置
+  // 计算对 W_ 的梯度，这里包含转置乘法，公式是: grad_W = grad_output^T @ X
   for (size_t b = 0; b < B; ++b) {
     auto grad_outp_bt = grad_out_ptr + b * T * D_out; // 当前批次的梯度
-    auto xp_bt = in_ptr + b * T * D_in;               // 当前批次的输入
-    dense::matmul_A_transpose(grad_outp_bt, D_out, xp_bt, D_in, nullptr,
-                              grad_w_ptr, D_in, T, D_out, D_in);
+    auto in_bt = in_ptr + b * T * D_in;               // 当前批次的输入
+    dense::matmul_A_transpose(grad_outp_bt, D_out, in_bt, D_in, nullptr,
+                              grad_w_ptr, D_in, T /*K*/, D_out /*M*/,
+                              D_in /*N*/);
   }
   if (has_bias_) {
-    // 计算对 b_的梯度，公式是: grad_b = sum(grad_output, axis=0)
-    // 这里我们只需要对输出维度进行累加
-    // 可以将 grad_output reshape为 [B * T, D_out]，然后对每个输出维度进行累加
-    // grad_b_[0] 就是对所有行的第一个输出维度求和，以此类推
+    /* 计算对 b_ 的梯度，公式是: grad_b = sum(grad_output, axis=0)
+       这里我们只需要对输出维度进行累加，假如 grad_output 形状[1,3,4]
+       [
+        [1,2,3,4]
+        [5,6,7,8]
+        [9,10,11,12]
+       ]
+       grad_b[0] = 1+5+9  = 15
+       grad_b[1] = 2+6+10 = 18
+       grad_b[2] = 3+7+11 = 21
+       grad_b[3] = 4+8+12 = 24
+    */
     auto grad_bp = reinterpret_cast<float *>(grad_b_.data());
-    auto BT = B * T;
     for (size_t i = 0; i < D_out; ++i) {
       float sum = 0.0f;
-      for (size_t j = 0; j < BT; ++j) {
+      for (size_t j = 0; j < B * T; ++j) {
         sum += grad_out_ptr[j * D_out + i];
       }
       grad_bp[i] += sum;
@@ -305,22 +325,22 @@ dense::Tensor Linear::backward(const dense::Tensor &grad_output) {
   // 对 输入 X 的梯度计算
   // 公式是: grad_X = grad_output @ W_
   for (size_t b = 0; b < B; ++b) {
-    auto grad_outp_bt = grad_out_ptr + b * T * D_out; // 当前批次的梯度
+    auto grad_outp_bt = grad_out_ptr + b * T * D_out;
     auto grad_inp_bt = grad_in_ptr + b * T * D_in;
+    // grad_outp_bt[T,D_out], w_ptr[D_out,D_in]
     dense::matmul(grad_outp_bt, D_out, w_ptr, D_in, nullptr, grad_inp_bt, D_in,
-                  T, D_out, D_in);
+                  T /*M*/, D_out /*K*/, D_in /*N*/);
   }
   return grad_input;
 }
 
 LayerNorm::LayerNorm(Context *ctx, const std::string &instance_name,
-                     int64_t ndim, bool has_bias)
-    : Layer(ctx, instance_name), ndim_(ndim), has_bias_(has_bias) {
-  // 归一化层有可学习参数 W_,b_(if has_bias=true)
+                     int64_t ndim, float epsilon, bool has_bias)
+    : Layer(ctx, instance_name), ndim_(ndim), epsilon_(epsilon),
+      has_bias_(has_bias) {
+  // 归一化层有可学习参数 W_(gamma),b_(beta)(if has_bias=true)
   ctx_->Register(this);
-  // ndim_ 是归一化的维度大小,在 GPT-2 中通常是 768
-  // 参数名称: h.11.ln_1.weight, 形状: [768], 类型: float
-  // 参数名称: h.11.ln_1.bias, 形状: [768], 类型: float
+  // ndim_ 是归一化的维度大小,等同于嵌入维度，GPT2 中通常是 768
   W_ = dense::Tensor(dense::kFloat32, {ndim_});
   if (has_bias) {
     b_ = dense::Tensor(dense::kFloat32, {ndim_});
@@ -330,20 +350,21 @@ LayerNorm::LayerNorm(Context *ctx, const std::string &instance_name,
 LayerNorm::~LayerNorm() = default;
 
 dense::Tensor LayerNorm::forward(const dense::Tensor &input) {
-  // 输入input的形状是 [batch_size, seq_len, ndim_]
+  // 输入input的形状是 [B, T, ndim_]
   // ndim_ 是归一化的维度大小,在 GPT-2 中通常是 768
-  // weight_ 的形状是 [ndim_], bias_ 的形状也是 [ndim_]
-  // 输出 output 的形状与输入相同，即 [batch_size, seq_len, ndim_]
+  // W_ 的形状是 [ndim_], b_ 的形状也是 [ndim_]
+  // 输出 output 的形状与输入相同，即 [B, T, ndim_]
   auto B = input.size(0);
   auto T = input.size(1);
   auto C = input.size(2);
 
-  auto output = dense::Tensor::zeros(input.dtype(), input.shape());
+  auto output = dense::Tensor::zeros_like(input);
 
   float *mean_ptr = nullptr;
   float *rstd_ptr = nullptr;
 
   if (is_training()) {
+    // 反向传播所需，原始输入以及一些中间计算结果
     input_cache_ = input.clone();
     mean_ = dense::Tensor::zeros(input.dtype(), {B, T});
     rstd_ = dense::Tensor::zeros(input.dtype(), {B, T});
@@ -353,16 +374,14 @@ dense::Tensor LayerNorm::forward(const dense::Tensor &input) {
 
   auto in_ptr = reinterpret_cast<const float *>(input.data());
   auto out_ptr = reinterpret_cast<float *>(output.data());
-  auto w_ptr = reinterpret_cast<float *>(W_.data());
-  auto b_ptr = reinterpret_cast<float *>(b_.data());
-
-  float eps = 1e-5f;
+  auto w_ptr = reinterpret_cast<float *>(W_.data()); // gamma
+  auto b_ptr = reinterpret_cast<float *>(b_.data()); // beta
 
   for (size_t b = 0; b < B; ++b) {
     for (size_t t = 0; t < T; ++t) {
 
       auto in_bt = in_ptr + b * T * C + t * C;
-      float *out_bt = out_ptr + b * T * C + t * C;
+      auto out_bt = out_ptr + b * T * C + t * C;
 
       float mean = 0.0f;
       for (size_t i = 0; i < C; ++i) {
@@ -377,14 +396,17 @@ dense::Tensor LayerNorm::forward(const dense::Tensor &input) {
       }
       var = var / C; // 方差
 
-      float rstd = 1.0f / std::sqrtf(var + eps);
+      float rstd = 1.0f / std::sqrt(var + epsilon_);
 
       for (size_t i = 0; i < C; ++i) {
-        // x_hat = (x-u)/sqrt(sigma^2+eplison)
+        // x_hat = (x-mean)/sqrt(var+eplison)
         float x_hat = (rstd * (in_bt[i] - mean));
         // y = x_hat*gamma + beta
-        float y = x_hat * w_ptr[i] + b_ptr[i];
-        out_bt[i] = y;
+        out_bt[i] = x_hat * w_ptr[i];
+        if (has_bias_) {
+          // bias 不是必须的
+          out_bt[i] += b_ptr[i];
+        }
       }
 
       if (is_training()) {
@@ -397,15 +419,15 @@ dense::Tensor LayerNorm::forward(const dense::Tensor &input) {
 }
 
 dense::Tensor LayerNorm::backward(const dense::Tensor &grad_output) {
-  // grad_output 形状: [batch_size, seq_len, ndim_], 例如 [1, 7, 768]
-  // weight_ (gamma) 形状: [ndim_]
-  // bias_ (beta) 形状: [ndim_]
+  // grad_output 形状: [B, T, ndim_], 例如 [1, 7, 768]
+  // W_ (gamma) 形状: [ndim_]
+  // b_ (beta) 形状: [ndim_]
 
   if (!grad_W_.is_defined()) {
-    grad_W_ = dense::Tensor::zeros(W_.dtype(), W_.shape());
+    grad_W_ = dense::Tensor::zeros_like(W_);
   }
   if (has_bias_ && !grad_b_.is_defined()) {
-    grad_b_ = dense::Tensor::zeros(b_.dtype(), b_.shape());
+    grad_b_ = dense::Tensor::zeros_like(b_);
   }
 
   auto input = input_cache_; // 前向时的输入
@@ -420,7 +442,10 @@ dense::Tensor LayerNorm::backward(const dense::Tensor &grad_output) {
   auto grad_b_ptr = reinterpret_cast<float *>(grad_b_.data());
   auto mean_ptr = reinterpret_cast<const float *>(mean_.data());
   auto rstd_ptr = reinterpret_cast<const float *>(rstd_.data());
-  auto grad_input = dense::Tensor::zeros(dense::kFloat32, input.shape());
+
+  // grad_input 的形状: [B,T,C]
+  // 返回给上一层的梯度，形状应当与 grad_output 一致
+  auto grad_input = dense::Tensor::zeros_like(input);
   auto grad_in_ptr = reinterpret_cast<float *>(grad_input.data());
 
   std::unique_ptr<float[]> x_hat(new float[C]);
@@ -428,9 +453,12 @@ dense::Tensor LayerNorm::backward(const dense::Tensor &grad_output) {
 
   for (size_t b = 0; b < B; ++b) {
     for (size_t t = 0; t < T; ++t) {
+      // 这三个形状相同
       auto in_bt = in_ptr + b * T * C + t * C;
       auto grad_out_bt = grad_out_ptr + b * T * C + t * C;
       auto grad_in_bt = grad_in_ptr + b * T * C + t * C;
+
+      // 这两个形状相同，是二维张量，在前向传播过程中保存的中间值
       auto mean_bt = mean_ptr[b * T + t];
       auto rstd_bt = rstd_ptr[b * T + t];
 
@@ -438,18 +466,18 @@ dense::Tensor LayerNorm::backward(const dense::Tensor &grad_output) {
       float dl_dx_hat_dot_x_hat = 0.0f;
 
       for (size_t i = 0; i < C; ++i) {
-        // y = x_hat
-        float y = (in_bt[i] - mean_bt) * rstd_bt;
-        x_hat[i] = y;
-
+        x_hat[i] = (in_bt[i] - mean_bt) * rstd_bt;
+        // dL/dx_hat = dL/dy * gamma
         dl_dx_hat[i] = grad_out_bt[i] * w_ptr[i];
-
+        // Σ(dL/dx_hat),最后计算的时候要用到的中间值
         dl_dx_hat_sum += dl_dx_hat[i];
+        // Σ(x_hat * dL/dx_hat)
+        dl_dx_hat_dot_x_hat += x_hat[i] * dl_dx_hat[i];
 
-        dl_dx_hat_dot_x_hat += y * dl_dx_hat[i];
-
+        // dL/db = Σ(dL/dy)
         grad_b_ptr[i] += grad_out_bt[i];
-        grad_w_ptr[i] += grad_out_bt[i] * y;
+        // dL/dW = Σ(dL/dy * x_hat)
+        grad_w_ptr[i] += grad_out_bt[i] * x_hat[i];
       }
 
       float rtsd_mean = (1.0 / C) * rstd_bt;
@@ -466,70 +494,71 @@ dense::Tensor LayerNorm::backward(const dense::Tensor &grad_output) {
 }
 
 GELU::GELU(Context *ctx, const std::string &instance_name)
-    : Layer(ctx, instance_name) {}
+    : Layer(ctx, instance_name) {
+  // 这一层没有可学习参数
+}
+
 GELU::~GELU() = default;
 
-#define GELU_SCALING_FACTOR sqrtf(2.0f / std::_Pi_val)
+#define GELU_SCALING_FACTOR std::sqrt(2.0f / std::_Pi_val)
 
 dense::Tensor GELU::forward(const dense::Tensor &input) {
-  // 输入 input 的形状是 [batch_size, seq_len, emb_dim]
-  // 输出 output 的形状与输入相同，即 [batch_size, seq_len, emb_dim]
+  // 输入 input 的形状是 [B, T, C]
+  // 输出 output 的形状与输入相同，即 [B, T, C]
   // GELU 激活函数的公式是: x * P(X <= x) = 0.5 * x * (1 + tanh(sqrt(2 / π) * (x
   // + 0.044715 * x^3)))
   if (is_training()) {
     input_cache_ = input.clone();
   }
+
   auto B = input.size(0);
   auto T = input.size(1);
   auto C = input.size(2);
 
-  auto N = B * T * C;
+  auto N = input.numel();
 
-  auto output = dense::Tensor::zeros(input.dtype(), input.shape());
+  auto output = dense::Tensor::zeros_like(input);
 
   auto in_ptr = reinterpret_cast<const float *>(input.data());
   auto out_ptr = reinterpret_cast<float *>(output.data());
 
   for (size_t i = 0; i < N; ++i) {
     float x = in_ptr[i];
-    float cube = 0.044715f * std::powf(x, 3);
+    float cube = 0.044715f * std::pow(x, 3);
     out_ptr[i] =
-        0.5f * x * (1.0f + std::tanhf(GELU_SCALING_FACTOR * (x + cube)));
+        0.5f * x * (1.0f + std::tanh(GELU_SCALING_FACTOR * (x + cube)));
   }
   return output;
 }
 
 dense::Tensor GELU::backward(const dense::Tensor &grad_output) {
-  // 输入 input 的形状是 [batch_size, seq_len, emb_dim]
-  // grad_output 的形状是 [batch_size, seq_len, emb_dim]
+  // 输入 input 的形状是 [B, T, C]
+  // grad_output 的形状是 [B, T, C]
 
   // GELU 激活函数的导数计算：GELU'(x)
   // GELU'(x) = 0.5 * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))) +
   //             0.5 * x * (1 - tanh^2(sqrt(2/pi) * (x + 0.044715 * x^3))) *
   //             sqrt(2/pi) * (1 + 3 * 0.044715 * x^2)
   auto input = input_cache_;
-  auto B = input.size(0);
-  auto T = input.size(1);
-  auto C = input.size(2);
 
-  auto N = B * T * C;
+  auto N = input.numel();
 
   auto grad_output_ptr = reinterpret_cast<const float *>(grad_output.data());
   auto in_ptr = reinterpret_cast<const float *>(input.data());
-  auto grad_input =
-      dense::Tensor::zeros(grad_output.dtype(), grad_output.shape());
+
+  auto grad_input = dense::Tensor::zeros_like(grad_output);
   auto grad_input_ptr = reinterpret_cast<float *>(grad_input.data());
 
   for (size_t i = 0; i < N; ++i) {
     float x = in_ptr[i];
 
-    float u = GELU_SCALING_FACTOR * (x + 0.044715f * std::powf(x, 3));
+    float u = GELU_SCALING_FACTOR * (x + 0.044715f * std::pow(x, 3));
     float du_dx =
-        GELU_SCALING_FACTOR * (1.0 + 0.044715f * 3.0 * std::powf(x, 2));
-    float tanh_val = tanhf(u);
+        GELU_SCALING_FACTOR * (1.0 + 0.044715f * 3.0 * std::pow(x, 2));
+    float tanh_val = std::tanh(u);
 
     auto dg_dx =
-        0.5 * (1 + tanh_val) + 0.5 * x * (1 - std::powf(tanh_val, 2)) * du_dx;
+        0.5 * (1 + tanh_val) + 0.5 * x * (1 - std::pow(tanh_val, 2)) * du_dx;
     grad_input_ptr[i] = dg_dx * grad_output_ptr[i];
   }
   return grad_input;
@@ -538,6 +567,7 @@ dense::Tensor GELU::backward(const dense::Tensor &grad_output) {
 Dropout::Dropout(Context *ctx, const std::string &instance_name,
                  float dropout_ratio)
     : Layer(ctx, instance_name), dropout_ratio_(dropout_ratio) {
+  // 这一层没有可学习的参数
   if (dropout_ratio < 0.0 || dropout_ratio >= 1.0) {
     throw std::invalid_argument("dropout probability must be in [0, 1)");
   }
@@ -547,49 +577,44 @@ Dropout::Dropout(Context *ctx, const std::string &instance_name,
 Dropout::~Dropout() = default;
 
 dense::Tensor Dropout::forward(const dense::Tensor &input) {
-  // 输入 input 的形状是 [batch_size, seq_len, emb_dim]
-  // 输出 output 的形状与输入相同，即 [batch_size, seq_len, emb_dim]
+  // 输入 input 的形状是 [B, T, C] 或者 [T, C](在多头注意力计算时)
+  // 输出 output 的形状与输入相同
   // 在训练模式下，随机丢弃一部分神经元
-  if (is_training()) {
-    int64_t bt = 1;
-    for (int64_t i = 0; i < input.dim() - 1; ++i) {
-      bt *= input.size(i);
+
+  if (!is_training())
+    return input;
+
+  auto C = input.size(-1);
+  int64_t bt = input.numel() / C;
+
+  auto in_ptr = reinterpret_cast<const float *>(input.data());
+  mask_ = dense::Tensor::rand(input.dtype(), input.shape());
+  auto mask_ptr = reinterpret_cast<float *>(mask_.data());
+  auto output = dense::Tensor::zeros_like(input);
+  auto out_ptr = reinterpret_cast<float *>(output.data());
+
+  for (size_t b = 0; b < bt; ++b) {
+    auto out_bt = out_ptr + b * C;
+    auto mask_bt = mask_ptr + b * C;
+    auto in_bt = in_ptr + b * C;
+
+    for (size_t i = 0; i < C; ++i) {
+      mask_bt[i] = mask_bt[i] > dropout_ratio_ ? 1.0f : 0.0f;
+      out_bt[i] = in_bt[i] * mask_bt[i] * scale_;
     }
-    auto C = input.size(-1);
-    auto in_ptr = reinterpret_cast<const float *>(input.data());
-    mask_ = dense::Tensor::rand(input.dtype(), input.shape());
-    auto mask_ptr = reinterpret_cast<float *>(mask_.data());
-    auto output = dense::Tensor::zeros(input.dtype(), input.shape());
-    auto out_ptr = reinterpret_cast<float *>(output.data());
-
-    for (size_t b = 0; b < bt; ++b) {
-      auto out_bt = out_ptr + b * C;
-      auto mask_bt = mask_ptr + b * C;
-      auto in_bt = in_ptr + b * C;
-
-      for (size_t i = 0; i < C; ++i) {
-        mask_bt[i] = mask_bt[i] > dropout_ratio_ ? 1.0f : 0.0f;
-        out_bt[i] = in_bt[i] * mask_bt[i] * scale_;
-      }
-    }
-
-    return output;
   }
-  return input;
+
+  return output;
 }
 
 dense::Tensor Dropout::backward(const dense::Tensor &grad_output) {
   // 梯度也要通过相同的掩码和缩放因子
-  int64_t bt = 1;
-  for (int64_t i = 0; i < grad_output.dim() - 1; ++i) {
-    bt *= grad_output.size(i);
-  }
   auto C = grad_output.size(-1);
+  int64_t bt = grad_output.numel() / C;
 
   auto grad_output_ptr = reinterpret_cast<const float *>(grad_output.data());
-  auto mask_ptr = reinterpret_cast<float *>(mask_.data());
-  auto grad_input =
-      dense::Tensor::zeros(grad_output.dtype(), grad_output.shape());
+  auto mask_ptr = reinterpret_cast<const float *>(mask_.data());
+  auto grad_input = dense::Tensor::zeros_like(grad_output);
   auto grad_input_ptr = reinterpret_cast<float *>(grad_input.data());
 
   for (size_t b = 0; b < bt; ++b) {
@@ -607,22 +632,29 @@ MLP::MLP(Context *ctx, const std::string &instance_name,
          const ModelConfig &config)
     : Layer(ctx, instance_name), config_(config) {
   // config_.emb_dim 是嵌入维度,通常是 768
-  c_fc_ = std::make_unique<Linear>(ctx, "c_fc", config_.emb_dim,
-                                   4 * config_.emb_dim);
+  auto out_dim =
+      static_cast<int64_t>(config_.expansion_ratio * config_.emb_dim);
+  c_fc_ = std::make_unique<Linear>(ctx, "c_fc", config_.emb_dim, out_dim);
   gelu_ = std::make_unique<GELU>(ctx, "gelu");
-  c_proj_ = std::make_unique<Linear>(ctx, "c_proj", 4 * config_.emb_dim,
-                                     config_.emb_dim);
+  c_proj_ = std::make_unique<Linear>(ctx, "c_proj", out_dim, config_.emb_dim);
   dropout_ = std::make_unique<Dropout>(ctx, "dropout", config_.drop_rate);
 }
 
 MLP::~MLP() = default;
 
 dense::Tensor MLP::forward(const dense::Tensor &input) {
-  // 输入 input 的形状是 [batch_size, seq_len, emb_dim]
-  // 输出 output 的形状也是 [batch_size, seq_len, emb_dim]
+  // 输入 input 的形状是 [B ,T ,C]
+  // 输出 output 的形状也是 [B ,T ,C]
+
+  // 从低维空间向高维空间投影
   auto x = c_fc_->forward(input);
+  // 激活
   x = gelu_->forward(x);
+  // 再从高维向低维投影
   x = c_proj_->forward(x);
+  // 经过上述两次投影，保证输入和输出形状不变
+
+  // 随机丢弃一些神经元
   x = dropout_->forward(x);
   return x;
 }
@@ -641,27 +673,35 @@ CausalSelfAttention::CausalSelfAttention(Context *ctx,
     : Layer(ctx, instance_name), config_(config), head_dim_(0), index_(idx),
       scale_(0.0f) {
   assert(config_.emb_dim % config_.n_heads == 0);
-  head_dim_ = config_.emb_dim / config_.n_heads;
-  scale_ = 1.0 / std::sqrtf(head_dim_);
+
+  // 每个头的维度
+  head_dim_ = static_cast<int64_t>(config_.emb_dim / config_.n_heads);
+
+  // 缩放因子
+  scale_ = 1.0 / std::sqrt(head_dim_);
+
+  // 用于计算 X 与 Q,K,V 三个权重矩阵乘法
   c_attn_ = std::make_unique<Linear>(ctx, "c_attn", config_.emb_dim,
                                      3 * config_.emb_dim, config_.qkv_bias);
   c_proj_ =
       std::make_unique<Linear>(ctx, "c_proj", config_.emb_dim, config_.emb_dim);
+
   attn_dropout_ =
       std::make_unique<Dropout>(ctx, "attn_dropout", config_.drop_rate);
   resid_dropout_ =
       std::make_unique<Dropout>(ctx, "resid_dropout", config_.drop_rate);
+
   mask_ = dense::Tensor::ones(dense::kInt8,
                               {config_.context_length, config_.context_length});
   {
     // 生成一个下三角掩码矩阵
     auto ptr = reinterpret_cast<int8_t *>(mask_.data());
-    auto R = mask_.size(0);
-    auto C = mask_.size(1);
-    for (size_t i = 0; i < R; ++i) {
-      for (size_t j = 0; j < C; ++j) {
-        if (j > i)
-          ptr[i * C + j] = 0;
+    auto M = mask_.size(0);
+    auto N = mask_.size(1);
+    for (size_t m = 0; m < M; ++m) {
+      for (size_t n = 0; n < N; ++n) {
+        if (n > m)
+          ptr[m * N + n] = 0;
       }
     }
   }
@@ -678,63 +718,66 @@ dense::Tensor CausalSelfAttention::forward(const dense::Tensor &input) {
   auto T = input.size(1); // 序列长度
   auto C = input.size(2); // 嵌入维度
 
-  // input首先分别于Q,K,V相乘，生成 Q,K,V三个矩阵
+  // input首先分别于Q,K,V相乘，生成 Q,K,V 三个矩阵
   // 因为Q,K,V三个矩阵在合在一起的，我们做一次乘法就全部完成了
-  // qkv [B,T,C*3]
+  // cached_qkv_: [B,T,C*3]
   cached_qkv_ = c_attn_->forward(input);
+  auto C3 = cached_qkv_.size(-1);
 
   // 每个头att的形状都是 [T,T],用于保存中间计算结果
   auto att = dense::Tensor::zeros(dense::kFloat32, {T, T});
 
   if (is_training()) {
-    // 为反向传播保存中间计算结果
+    // 缓存 softmax 的输出，因为 softmax 反向传播时依赖前向输出
     cached_att_after_softmax_ =
         dense::Tensor::zeros(dense::kFloat32, {B, config_.n_heads, T, T});
+    // 缓存 dropout 的输出
     cached_att_after_dropout_ =
         dense::Tensor::zeros(dense::kFloat32, {B, config_.n_heads, T, T});
   }
 
   // 输出张量
-  auto output = dense::Tensor::zeros(dense::kFloat32, {B, T, C});
-
-  auto C3 = C * 3;
+  auto output = dense::Tensor::zeros_like(input);
 
   auto qkv_ptr = reinterpret_cast<float *>(cached_qkv_.data());
   auto out_ptr = reinterpret_cast<float *>(output.data());
 
+  auto q_ptr = qkv_ptr;
+  auto k_ptr = qkv_ptr + C;
+  auto v_ptr = qkv_ptr + C * 2;
+
   for (size_t b = 0; b < B; ++b) {
     for (size_t h = 0; h < config_.n_heads; ++h) {
-
-      header_forward(qkv_ptr, C3, qkv_ptr + C, C3, qkv_ptr + C * 2, C3, att,
-                     out_ptr, C, b, h);
+      header_forward(q_ptr, C3, k_ptr, C3, v_ptr, C3, out_ptr, C, att, b, h);
     }
   }
-  // 投影
+  // output:[B,T,C]
   output = c_proj_->forward(output);
-  // 推理这个dropout依然不起作用
   output = resid_dropout_->forward(output);
   return output;
 }
 
 void CausalSelfAttention::header_forward(float *q, size_t q_stride, float *k,
                                          size_t k_stride, float *v,
-                                         size_t v_stride, dense::Tensor &att,
-                                         float *out, size_t out_stride,
+                                         size_t v_stride, float *out,
+                                         size_t out_stride, dense::Tensor &att,
                                          size_t b, size_t h) {
 
   auto T = att.size(0);
   auto total_seq_len = att.size(1);
   auto C = out_stride;
-  auto q_bt = q + b * T * q_stride;
-  auto k_bt = k + b * total_seq_len * C;
-  auto v_bt = v + b * total_seq_len * C;
 
+  auto q_bt = q + b * T * q_stride;
+  auto k_bt = k + b * total_seq_len * k_stride;
+  auto v_bt = v + b * total_seq_len * v_stride;
+
+  att.zero_(); // att 清零，矩阵乘法输出是累加，不是赋值
   auto att_ptr = reinterpret_cast<float *>(att.data());
 
   auto out_bt = out + b * T * C; // 当前批次的输出起始位置
   auto mask_ptr = reinterpret_cast<const int8_t *>(mask_.data());
 
-  // 1. Q*K^T, [T,head_dim_] @ [T,head_dim_]^T --> [T,T]
+  // 1. Q*K^T, [T,head_dim_] @ [total_seq_len,head_dim_]^T --> [T,total_seq_len]
   dense::matmul_B_transpose(q_bt + h * head_dim_, // Q 的起始位置
                             q_stride,             // Q 的行距
                             k_bt + h * head_dim_, // K 的起始位置
@@ -752,7 +795,7 @@ void CausalSelfAttention::header_forward(float *q, size_t q_stride, float *k,
     att_ptr[i] *= scale_; // 缩放
   }
 
-  // 对 att[T,T] 应用掩码
+  // 对 att[T,total_seq_len] 应用掩码
   // 掩码矩阵是 [config_.context_length,config_.context_length]
   for (size_t i = total_seq_len - T; i < total_seq_len; ++i) {
     for (size_t j = 0; j < total_seq_len; ++j) {
@@ -773,8 +816,8 @@ void CausalSelfAttention::header_forward(float *q, size_t q_stride, float *k,
     std::memcpy(ptr, att_ptr, att.data_size()); // 缓存softmax的注意力
   }
 
-  // 在推理场景下，dropout不生效
-  // drop_output[T,T]
+  // 在推理场景下，dropout 不生效
+  // drop_output[T,total_seq_len]
   auto drop_output = attn_dropout_->forward(att);
   auto drop_output_ptr = reinterpret_cast<float *>(drop_output.data());
 
@@ -783,13 +826,14 @@ void CausalSelfAttention::header_forward(float *q, size_t q_stride, float *k,
                b * config_.n_heads * T * total_seq_len +
                h * T * total_seq_len; // 每个批次每个头的起始位置
     std::memcpy(ptr, drop_output_ptr,
-                att.data_size()); // 缓存 dropout 后的 attention
+                drop_output.data_size()); // 缓存 dropout 后的 attention
   }
 
   // 计算 attention @ V
   // 然后再直接赋值到输出的指定位置，这里也包含将多头合并到最终的输出
-  dense::matmul(drop_output_ptr, T, v_bt + h * head_dim_, v_stride, nullptr,
-                out_bt + h * head_dim_, C, T, total_seq_len, head_dim_);
+  dense::matmul(drop_output_ptr, total_seq_len, v_bt + h * head_dim_, v_stride,
+                nullptr, out_bt + h * head_dim_, C, T /*M*/,
+                total_seq_len /*K*/, head_dim_ /*N*/);
 }
 
 // 如果使能kv cache，在这里处理
@@ -822,17 +866,14 @@ dense::Tensor CausalSelfAttention::forward_cache(const dense::Tensor &input) {
   k = cache->key_states();   // [B,total_seq_len,C]
   v = cache->value_states(); // [B,total_seq_len,C]
 
-  int64_t total_seq_len =
-      k.size(1); // 总的token长度，随着推理的进行，这个值每次加[1]
+  // 总的token长度，随着推理的进行，这个值每次加[1]
+  auto total_seq_len = k.size(1);
 
-  // 每个头att的形状都是 [T,total_seq_len]
-  // 这个形状是由 q*k.transpose() 决定,q[B,T,C],k的转置[B,C,total_seq_len] =>
-  // [B,T,total_seq_len] 因为我们分批次计算，所以，att的形状不考虑批次 =>
-  // [T,total_seq_len] 可以想象第一次推理，att的形状就是 [T,T]
+  // 每个头att的形状都是 [T,total_seq_len],第一次推理应该是 [T,T]
   auto att = dense::Tensor::zeros(dense::kFloat32, {T, total_seq_len});
 
   // 输出张量，这是合并了多头之后的输出形状，等同于输入形状
-  auto output = dense::Tensor::zeros(dense::kFloat32, {B, T, C});
+  auto output = dense::Tensor::zeros_like(input);
   auto out_ptr = reinterpret_cast<float *>(output.data());
 
   float *q_ptr = reinterpret_cast<float *>(q.data());
@@ -841,16 +882,17 @@ dense::Tensor CausalSelfAttention::forward_cache(const dense::Tensor &input) {
 
   for (size_t b = 0; b < B; ++b) {
     for (size_t h = 0; h < config_.n_heads; ++h) {
-      header_forward(q_ptr, C, k_ptr, C, v_ptr, C, att, out_ptr, C, b, h);
+      header_forward(q_ptr, C, k_ptr, C, v_ptr, C, out_ptr, C, att, b, h);
     }
   }
+  // output:[B,T,C]
   output = c_proj_->forward(output);
   output = resid_dropout_->forward(output);
   return output;
 }
 
 dense::Tensor CausalSelfAttention::backward(const dense::Tensor &grad_output) {
-  // grad_output 形状: [batch_size, seq_len, emb_dim]
+  // grad_output 形状: [B,T,C]
   auto grad_input = resid_dropout_->backward(grad_output);
   grad_input = c_proj_->backward(grad_input);
 
@@ -858,14 +900,15 @@ dense::Tensor CausalSelfAttention::backward(const dense::Tensor &grad_output) {
   auto T = grad_input.size(1);
   auto C = grad_input.size(2);
 
-  auto C3 = C * 3;
+  auto C3 = cached_qkv_.size(-1);
 
-  auto grad_qkv = dense::Tensor::zeros(dense::kFloat32, {B, T, C3});
+  auto grad_qkv = dense::Tensor::zeros_like(cached_qkv_);
   // 用于保存中间计算结果，最终会合并到 grad_qkv
   auto grad_att = dense::Tensor::zeros(dense::kFloat32, {T, T});
 
   for (size_t b = 0; b < B; ++b) {
     for (size_t h = 0; h < config_.n_heads; ++h) {
+
       header_backward(cached_qkv_, grad_qkv, grad_input, grad_att, b, h);
     }
   }
@@ -882,7 +925,11 @@ void CausalSelfAttention::header_backward(dense::Tensor &qkv,
   auto T = grad_input.size(1);
   auto C = grad_input.size(2);
 
-  auto C3 = C * 3;
+  // 每次都要清零
+  grad_att.zero_();
+  auto grad_att_ptr = reinterpret_cast<float *>(grad_att.data());
+
+  auto C3 = grad_qkv.size(-1);
 
   auto q_bt = reinterpret_cast<float *>(qkv.data()) + b * T * C3;
   auto k_bt = q_bt + C;
@@ -902,26 +949,25 @@ void CausalSelfAttention::header_backward(dense::Tensor &qkv,
       reinterpret_cast<float *>(cached_att_after_softmax_.data()) +
       b * config_.n_heads * T * T + h * T * T; // 每个批次每个头的起始位置
 
-  auto grad_att_ptr = reinterpret_cast<float *>(grad_att.data());
-
   auto mask_ptr = reinterpret_cast<int8_t *>(mask_.data());
 
   // 计算 grad_att
-  // grad_att = matmul(grad_y, v.transpose(-2, -1))
+  // grad_att = matmul(grad_input, v.transpose(-2, -1))
   dense::matmul_B_transpose(grad_input_bt + h * head_dim_, C,
                             v_bt + h * head_dim_, C3, nullptr, grad_att_ptr, T,
-                            T, T, head_dim_);
+                            T /*M*/, T /*N*/, head_dim_ /*K*/);
 
   // 计算对 v 的梯度
-  // grad_v = matmul(att.transpose(-2, -1), grad_y)
-  dense::matmul_A_transpose(cached_att_after_dropout_bt, T,
-                            grad_input_bt + h * head_dim_, C, nullptr,
-                            grad_v_bt + h * head_dim_, C3, T, T, head_dim_);
+  // grad_v = matmul(cached_att_after_dropout.transpose(-2, -1), grad_input)
+  dense::matmul_A_transpose(
+      cached_att_after_dropout_bt, T, grad_input_bt + h * head_dim_, C, nullptr,
+      grad_v_bt + h * head_dim_, C3, T /*K*/, T /*M*/, head_dim_ /*N*/);
 
   auto grad_att_before_dropout = attn_dropout_->backward(grad_att);
   auto grad_att_before_dropout_ptr =
       reinterpret_cast<float *>(grad_att_before_dropout.data());
 
+  // softmax 反向传播
   dense::mat_softmax_backward(grad_att_ptr, cached_att_after_softmax_bt,
                               grad_att_before_dropout_ptr, T, T);
 
@@ -940,22 +986,24 @@ void CausalSelfAttention::header_backward(dense::Tensor &qkv,
   // 计算对 q 的梯度
   // grad_q = matmul(grad_att, k)
   dense::matmul(grad_att_ptr, T, k_bt + h * head_dim_, C3, nullptr,
-                grad_q_bt + h * head_dim_, C3, T, T, head_dim_);
+                grad_q_bt + h * head_dim_, C3, T /*M*/, T /*K*/,
+                head_dim_ /*N*/);
 
   // 计算对 k 的梯度
-  //  grad_k = matmul(grad_att.transpose(-2, -1), q)
+  // grad_k = matmul(grad_att.transpose(-2, -1), q)
   dense::matmul_A_transpose(grad_att_ptr, T, q_bt + h * head_dim_, C3, nullptr,
-                            grad_k_bt + h * head_dim_, C3, T, T, head_dim_);
+                            grad_k_bt + h * head_dim_, C3, T /*K*/, T /*M*/,
+                            head_dim_ /*N*/);
 }
 
 Block::Block(Context *ctx, const std::string &instance_name,
              const ModelConfig &config, size_t idx)
     : Layer(ctx, instance_name), config_(config) {
   ln_1_ = std::make_unique<LayerNorm>(ctx, "ln_1", config_.emb_dim,
-                                      config_.qkv_bias);
+                                      config_.ln_epsilon, config_.qkv_bias);
   attn_ = std::make_unique<CausalSelfAttention>(ctx, "attn", config_, idx);
   ln_2_ = std::make_unique<LayerNorm>(ctx, "ln_2", config_.emb_dim,
-                                      config_.qkv_bias);
+                                      config_.ln_epsilon, config_.qkv_bias);
   mlp_ = std::make_unique<MLP>(ctx, "mlp", config_);
 }
 
@@ -968,51 +1016,52 @@ dense::Tensor Block::forward(const dense::Tensor &input) {
   x = attn_->forward(x);
   {
     // 第一个残差连接
-    auto s_ptr = reinterpret_cast<const float *>(input.data());
+    auto in_ptr = reinterpret_cast<const float *>(input.data());
     auto x_ptr = reinterpret_cast<float *>(x.data());
     for (size_t i = 0; i < N; ++i) {
-      x_ptr[i] += s_ptr[i];
+      x_ptr[i] += in_ptr[i];
     }
   }
   auto after_first_residual = x;
+
   x = ln_2_->forward(x);
   x = mlp_->forward(x);
   {
     // 第二个残差连接
-    auto s_ptr = reinterpret_cast<const float *>(after_first_residual.data());
+    auto in_ptr = reinterpret_cast<const float *>(after_first_residual.data());
     auto x_ptr = reinterpret_cast<float *>(x.data());
     for (size_t i = 0; i < N; ++i) {
-      x_ptr[i] += s_ptr[i];
+      x_ptr[i] += in_ptr[i];
     }
   }
   return x;
 }
 
 dense::Tensor Block::backward(const dense::Tensor &grad_output) {
-  auto grad_y_before_add = grad_output;
+  auto N = grad_output.numel();
+
   auto grad_shortcut_2 = grad_output;
 
-  auto grad_from_mlp = mlp_->backward(grad_y_before_add);
+  auto grad_from_mlp = mlp_->backward(grad_output);
   auto grad_before_ln2 = ln_2_->backward(grad_from_mlp);
   {
     // 第二个残差连接的梯度
-    auto s_ptr = reinterpret_cast<float *>(grad_shortcut_2.data());
+    auto shortcut_2_ptr = reinterpret_cast<float *>(grad_shortcut_2.data());
     auto grad_ptr = reinterpret_cast<float *>(grad_before_ln2.data());
-    for (size_t i = 0; i < grad_before_ln2.numel(); ++i) {
-      grad_ptr[i] += s_ptr[i];
+    for (size_t i = 0; i < N; ++i) {
+      grad_ptr[i] += shortcut_2_ptr[i];
     }
   }
 
-  auto grad_to_x_after_attn_and_shortcut1 = grad_before_ln2;
+  auto grad_shortcut_1 = grad_before_ln2;
   auto grad_from_attn = attn_->backward(grad_before_ln2);
   auto grad_before_ln1 = ln_1_->backward(grad_from_attn);
   {
     // 第一个残差连接的梯度
-    auto s_ptr =
-        reinterpret_cast<float *>(grad_to_x_after_attn_and_shortcut1.data());
+    auto shortcut_1_ptr = reinterpret_cast<float *>(grad_shortcut_1.data());
     auto grad_ptr = reinterpret_cast<float *>(grad_before_ln1.data());
-    for (size_t i = 0; i < grad_before_ln1.numel(); ++i) {
-      grad_ptr[i] += s_ptr[i];
+    for (size_t i = 0; i < N; ++i) {
+      grad_ptr[i] += shortcut_1_ptr[i];
     }
   }
   return grad_before_ln1;
@@ -1023,24 +1072,27 @@ LogSoftmaxCrossEntropyLoss::~LogSoftmaxCrossEntropyLoss() = default;
 
 double LogSoftmaxCrossEntropyLoss::forward(const dense::Tensor &input,
                                            const dense::Tensor &target) {
-  // x的形状是 [B,T,50257]
-  // y_true的形状是 [B,T] 或 [B,T,50257]
-  // 这里的50257是GPT-2的词汇表大小
+  // input [B,T,vocab_size]
+  // target 的形状是 [B,T] 或 [B,T,vocab_size]
 
   auto B = input.size(0); // 批大小
   auto T = input.size(1); // token数
   auto C = input.size(2); // 类别数
 
   if (target.dim() == 2) {
+    if (target.dtype() != dense::DType::kInt32) {
+      throw std::runtime_error("输入张量的类型必须是:kInt32");
+    }
+
     // 如果 target 是整数标签，转换为 one-hot 编码
     // 创建一个全零的张量，作为 one-hot 编码的容器
-    cached_y_true_ = dense::Tensor::zeros(dense::kFloat32, {B, T, C});
-    for (size_t b = 0; b < B; ++b) {
+    cached_target_ = dense::Tensor::zeros_like(input);
 
+    for (size_t b = 0; b < B; ++b) {
       auto target_bt = reinterpret_cast<const int32_t *>(target.data()) + b * T;
 
       for (size_t t = 0; t < T; ++t) {
-        auto y_true_bt = reinterpret_cast<float *>(cached_y_true_.data()) +
+        auto y_true_bt = reinterpret_cast<float *>(cached_target_.data()) +
                          b * T * C + t * C;
         for (size_t k = 0; k < C; ++k) {
           if (target_bt[t] == k) {
@@ -1051,9 +1103,10 @@ double LogSoftmaxCrossEntropyLoss::forward(const dense::Tensor &input,
       }
     }
   } else {
-    cached_y_true_ = target; // 如果已经是 one-hot 编码，直接使用
+    cached_target_ = target; // 如果已经是 one-hot 编码，直接使用
   }
-  cached_softmax_ = dense::Tensor::blank(dense::kFloat32, {B, T, C});
+
+  cached_softmax_ = dense::Tensor::zeros_like(input);
 
   double total_loss = 0.0f;
 
@@ -1067,7 +1120,7 @@ double LogSoftmaxCrossEntropyLoss::forward(const dense::Tensor &input,
       auto cached_softmax_bt =
           reinterpret_cast<float *>(cached_softmax_.data()) + b * T * C + t * C;
 
-      auto y_true_bt = reinterpret_cast<const float *>(cached_y_true_.data()) +
+      auto y_true_bt = reinterpret_cast<const float *>(cached_target_.data()) +
                        b * T * C + t * C;
 
       // 计算 z_max
@@ -1127,7 +1180,7 @@ dense::Tensor LogSoftmaxCrossEntropyLoss::backward() {
       auto cached_softmax_bt =
           reinterpret_cast<const float *>(cached_softmax_.data()) + b * T * C +
           t * C;
-      auto y_true_bt = reinterpret_cast<const float *>(cached_y_true_.data()) +
+      auto y_true_bt = reinterpret_cast<const float *>(cached_target_.data()) +
                        b * T * C + t * C;
       auto grad_bt = reinterpret_cast<float *>(grad.data()) + b * T * C + t * C;
 
@@ -1233,7 +1286,8 @@ GPT::GPT(const ModelConfig &config) : config_(config) {
     auto block = std::make_unique<Block>(&ctx_, "h", config_, i);
     h_.emplace_back(std::move(block));
   }
-  ln_f_ = std::make_unique<LayerNorm>(&ctx_, "ln_f", config_.emb_dim, true);
+  ln_f_ = std::make_unique<LayerNorm>(&ctx_, "ln_f", config_.emb_dim,
+                                      config_.ln_epsilon, true);
   lm_head_ = std::make_unique<Linear>(&ctx_, "lm_head", config_.emb_dim,
                                       config_.vocab_size, false);
 }
@@ -1351,14 +1405,14 @@ dense::Tensor GPT::forward(const dense::Tensor &input) {
   auto T = input.size(1);
   assert(T <= config_.context_length);
 
-  std::vector<int> pos_data(B * T);
+  std::vector<int32_t> pos_data(B * T);
   size_t current_pos = 0;
   if (is_enable_cache()) {
     current_pos = ctx_.cache_->get_seq_length();
   }
   for (size_t i = 0; i < B; ++i) {
     for (size_t j = 0; j < T; ++j) {
-      pos_data[i * T + j] = current_pos + static_cast<int>(j);
+      pos_data[i * T + j] = current_pos + static_cast<int32_t>(j);
     }
   }
 
@@ -1423,11 +1477,11 @@ std::vector<int> GPT::inference(std::vector<int> tokens, int max_length,
           &result_tokens[0]);
     }
     auto logits = forward(input_tensor);
-    //  【B,T,C]
+    // [B,T,C]
     auto B = logits.size(0);
     auto T = logits.size(1);
     auto C = logits.size(2);
-    // 只取最后一个token预测向量
+    // 只取第一个批次的最后一个token预测向量
     auto offset = (T - 1) * C * sizeof(float);
     auto ptr = reinterpret_cast<float *>(logits.data() + offset);
     auto logits_tensor = dense::Tensor::from_blob(logits.dtype(), {1, C}, ptr);
@@ -1556,17 +1610,7 @@ void GPT::get_params_and_grads(ParamsAndGrads &params_and_grads) {
 }
 
 dense::Tensor GPT::backward(const dense::Tensor &grad_output) {
-  // `grad_output` 实际上是损失对 `logits` 的梯度，因为它来自 `cross_entropy`
-  // 的反向 如果 `target` 存在，`grad_output` 是 `dL/d_logits` 如果 `target`
-  // 不存在，那么 `backward` 不应该被调用或 `grad_output` 会是 0
-
-  // 1. 语言模型头 `lm_head_` 的反向传播
-  // lm_head_ 的 backward 接收 dL/d_logits，并返回 dL/d_lm_head_input
   auto grad = lm_head_->backward(grad_output);
-
-  // 2. 最终 LayerNorm `ln_f_` 的反向传播
-  // ln_f_ 的 backward 接收 dL/d_ln_f_output (即 lm_head_ 的输入梯度)，并返回
-  // dL/d_ln_f_input
   grad = ln_f_->backward(grad);
 
   // 3. Transformer Block 层 `h_` 的反向传播（逆序遍历）
@@ -1578,7 +1622,6 @@ dense::Tensor GPT::backward(const dense::Tensor &grad_output) {
     grad = block->backward(grad);
   }
 
-  // 4. Dropout 层的反向传播
   // grad 此时是损失对 (tok_emb + pos_emb) 之后，dropout 之前的输出的梯度
   grad = dropout_->backward(grad);
 
@@ -1601,12 +1644,6 @@ dense::Tensor GPT::backward(const dense::Tensor &grad_output) {
   // 索引的梯度， 而是直接更新 `wpe_` 自身的权重。这里调用 `wpe_->backward`
   // 即可。
   wpe_->backward(grad_pos_emb); // 对位置嵌入权重的梯度会在这里计算
-
-  // GPT::backward 最终返回损失对模型原始输入 (input) 的梯度。
-  // 注意：在分类或生成任务中，我们通常不关心对原始离散输入 token 的梯度，
-  // 但为了完整性，这里返回了 `wte_->backward` 的结果。
-  // 如果 `input` 是 one-hot 编码或其他连续表示，这个梯度才有实际意义。
-  // 对于离散 token id，这个梯度通常用于内部更新嵌入权重，而不直接用于上游优化。
 
   return grad_input;
 }
