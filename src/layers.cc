@@ -3,8 +3,6 @@
 #include "json.hpp"
 #include "sampling.h"
 #include <algorithm>
-#include <atomic>
-#include <condition_variable>
 #include <fstream>
 #include <functional>
 #include <iosfwd>
