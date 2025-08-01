@@ -110,18 +110,104 @@ void test_mat_softmax() {
 
 void test_logsoftmax_crossentroy() {
   std::vector<float> x = {1.0, 2.0, 3.0, 4.0, 5.0, 6.1, 7.5, 8.0};
-  std::vector<int64_t> y = {1, 3};
+  std::vector<int32_t> y = {1, 3};
 
   dense::Tensor x_tensor =
       dense::Tensor::from_blob(dense::DType::kFloat32, {1, 2, 4}, &x[0]);
   dense::Tensor y_tensor =
-      dense::Tensor::from_blob(dense::DType::kFloat32, {1, 2}, &y[0]);
+      dense::Tensor::from_blob(dense::DType::kInt32, {1, 2}, &y[0]);
 
   LogSoftmaxCrossEntropyLoss criterion;
   double loss = criterion.forward(x_tensor, y_tensor);
   std::cout << "loss:" << loss << std::endl;
   auto output = criterion.backward();
   std::cout << output.to_string() << std::endl;
+}
+
+void test_self_attension() {
+  ModelConfig config;
+  config.context_length = 4;
+  config.n_heads = 2;
+  config.emb_dim = 4;
+  Context ctx;
+  ctx.training = true;
+
+  Linear lm(&ctx, "linear", config.emb_dim, config.emb_dim);
+  CausalSelfAttention att(&ctx, "att", config, 0);
+  LogSoftmaxCrossEntropyLoss criterion;
+
+  std::vector<float> x = {1.0, 2.0, 3.0, 4.0, 2.1, 3.1, 4.1, 5.1};
+  std::vector<int32_t> y = {1, 3};
+
+  dense::Tensor x_tensor =
+      dense::Tensor::from_blob(dense::DType::kFloat32, {1, 2, 4}, &x[0]);
+  dense::Tensor y_tensor =
+      dense::Tensor::from_blob(dense::DType::kInt32, {1, 2}, &y[0]);
+
+  std::vector<float> lm_weight = {
+      -0.5306, -0.3244, 1.7593,  -0.4040, 2.1890, -0.8990, 0.5889, -0.3356,
+      -0.1402, 1.0750,  -0.0240, -0.5482, 0.9018, -0.1813, 0.3789, -0.0610};
+
+  std::vector<float> lm_bias = {1.6170, -1.3437, -0.4405, 0.9480};
+  std::vector<float> c_attn_weight = {
+      -0.3018, 1.4686,  0.4823,  0.5763,  -1.0916, 0.9300,  -0.9224, -0.0236,
+      -0.6322, -0.1761, 0.7195,  1.2235,  -0.4291, -0.6773, 0.0332,  -1.3214,
+      0.6860,  -0.7695, 0.6082,  1.4022,  -1.1864, -1.0105, -1.1372, -2.3769,
+      -0.3113, -0.5944, -2.6337, -0.7431, 0.6553,  0.3310,  -1.3414, 0.0925,
+      -1.1995, 0.1116,  -0.0292, 0.8146,  0.0358,  -2.1648, 0.2887,  -1.0243,
+      -1.6303, -0.4749, 1.8948,  -0.5505, 0.3283,  0.2875,  -0.2010, 0.2324};
+  std::vector<float> c_attn_bias = {0.9123, 1.8398,  0.2893, -2.8144,
+                                    0.0060, 1.7524,  1.7609, -0.9690,
+                                    0.7582, -0.2516, 1.1334, 0.7132};
+  std::vector<float> c_proj_weight = {
+      -1.7952, 0.1719,  -2.0076, -0.6997, -0.3000, 0.2866,  -0.4165, 0.2632,
+      -0.1933, -0.5491, -0.5827, -1.3250, -1.1561, -1.7588, 0.1984,  -0.1549};
+  std::vector<float> c_proj_bias = {-1.0506, 0.7706, -1.3649, 0.6076};
+
+  lm.W_ =
+      dense::Tensor::from_blob(dense::DType::kFloat32, {4, 4}, &lm_weight[0]);
+  lm.b_ = dense::Tensor::from_blob(dense::DType::kFloat32, {4}, &lm_bias[0]);
+  att.c_attn_->W_ = dense::Tensor::from_blob(dense::DType::kFloat32, {12, 4},
+                                             &c_attn_weight[0]);
+  att.c_attn_->b_ =
+      dense::Tensor::from_blob(dense::DType::kFloat32, {12}, &c_attn_bias[0]);
+  att.c_proj_->W_ =
+      dense::Tensor::from_blob(dense::kFloat32, {4, 4}, &c_proj_weight[0]);
+  att.c_proj_->b_ =
+      dense::Tensor::from_blob(dense::DType::kFloat32, {4}, &c_proj_bias[0]);
+
+  auto out = lm.forward(x_tensor);
+  std::cout << "lm forward output: " << out.to_string() << std::endl;
+  auto logits = att.forward(out);
+  std::cout << "att forward output: " << logits.to_string() << std::endl;
+
+  auto loss = criterion.forward(logits, y_tensor);
+  std::cout << "criterion loss: " << loss << std::endl;
+
+  auto grad = criterion.backward();
+  std::cout << "criterion backward output: " << grad.to_string() << std::endl;
+
+  auto att_grad = att.backward(grad);
+  std::cout << "att.c_attn_w_grad backward output: "
+            << att.c_attn_->grad_W_.to_string() << std::endl;
+  std::cout << "att.c_attn_b_grad backward output: "
+            << att.c_attn_->grad_b_.to_string() << std::endl;
+
+  std::cout << "att.c_proj_w_grad backward output: "
+            << att.c_proj_->grad_W_.to_string() << std::endl;
+  std::cout << "att.c_proj_b_grad backward output: "
+            << att.c_proj_->grad_b_.to_string() << std::endl;
+
+  std::cout << "att backward output: " << att_grad.to_string() << std::endl;
+  auto lm_grad = lm.backward(att_grad);
+
+  std::cout << "lm.grad_w backward output: " << lm.grad_W_.to_string()
+            << std::endl;
+  std::cout << "lm.grad_g backward output: " << lm.grad_b_.to_string()
+            << std::endl;
+
+  std::cout << "lm backward output: " << lm_grad.to_string() << std::endl;
+  printf("done");
 }
 
 // #define INFERENCE
@@ -131,7 +217,8 @@ int main() {
   // test_layer_normal();
   // test_gelu();
   // test_mat_softmax();
-  test_logsoftmax_crossentroy();
+  // test_logsoftmax_crossentroy();
+  test_self_attension();
   return 0;
 #endif
 

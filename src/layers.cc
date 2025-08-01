@@ -578,7 +578,6 @@ dense::Tensor Dropout::forward(const dense::Tensor &input) {
   // 输入 input 的形状是 [B, T, C] 或者 [T, C](在多头注意力计算时)
   // 输出 output 的形状与输入相同
   // 在训练模式下，随机丢弃一部分神经元
-
   if (!is_training())
     return input;
 
