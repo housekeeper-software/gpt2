@@ -1171,7 +1171,7 @@ dense::Tensor LogSoftmaxCrossEntropyLoss::backward() {
   auto T = cached_softmax_.size(1); // token数
   auto C = cached_softmax_.size(2); // 类别数
 
-  auto grad = dense::Tensor::zeros(dense::kFloat32, cached_softmax_.shape());
+  auto grad = dense::Tensor::zeros_like(cached_softmax_);
 
   auto N = static_cast<double>(B * T);
 
@@ -1213,10 +1213,8 @@ void AdamW::ensure_state(int group_idx, int param_idx,
 
   // 惰性初始化
   if (!m_states_[group_idx][param_idx].is_defined()) {
-    m_states_[group_idx][param_idx] =
-        dense::Tensor::zeros(param.dtype(), param.shape());
-    v_states_[group_idx][param_idx] =
-        dense::Tensor::zeros(param.dtype(), param.shape());
+    m_states_[group_idx][param_idx] = dense::Tensor::zeros_like(param);
+    v_states_[group_idx][param_idx] = dense::Tensor::zeros_like(param);
   }
 }
 
@@ -1420,7 +1418,7 @@ dense::Tensor GPT::forward(const dense::Tensor &input) {
 
   auto tok_emb = wte_->forward(input);
   auto pos_emb = wpe_->forward(pos);
-  auto tok_pos_emb = dense::Tensor::zeros(dense::kFloat32, tok_emb.shape());
+  auto tok_pos_emb = dense::Tensor::zeros_like(tok_emb);
 
   auto C = tok_pos_emb.size(-1);
   {
