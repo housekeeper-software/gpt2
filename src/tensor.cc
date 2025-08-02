@@ -1,5 +1,6 @@
 #include "tensor.h"
 #include "storage.h"
+#include <cblas.h>
 #include <iostream>
 #include <numeric>
 #include <random>
@@ -343,9 +344,93 @@ Tensor Tensor::transpose_2d() {
 }
 
 // A的形状[M, K]，B的形状[K, N]，C的形状[M, N]
-void matmul(const float *A, size_t A_stride, const float *B, size_t B_stride,
-            const float *bias, float *C, size_t C_stride, size_t M, size_t K,
-            size_t N) {
+void matmul_openblas(const float *A, size_t A_stride, const float *B,
+                     size_t B_stride, const float *bias, float *C,
+                     size_t C_stride, size_t M, size_t K, size_t N) {
+  // C += A * B
+  // 将 beta 设置为 1.0f，表示将乘法结果累加到 C 的原有值上
+  cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, M, N, K, 1.0f, A,
+              A_stride, B, B_stride,
+              1.0f, // 累加到 C 的原有值
+              C, C_stride);
+
+  // 加上 bias
+  if (bias) {
+    for (size_t m = 0; m < M; ++m) {
+      for (size_t n = 0; n < N; ++n) {
+        C[m * C_stride + n] += bias[n];
+      }
+    }
+  }
+}
+
+// A的形状[K,M],B的形状[K,N],C的形状[M,N]
+void matmul_A_transpose_openblas(const float *A, size_t A_stride,
+                                 const float *B, size_t B_stride,
+                                 const float *bias, float *C, size_t C_stride,
+                                 size_t K, size_t M, size_t N) {
+  // C += A_trans * B
+  cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, M, N, K, 1.0f, A,
+              A_stride, B, B_stride,
+              1.0f, // 累加到 C 的原有值
+              C, C_stride);
+
+  // 加上 bias
+  if (bias) {
+    for (size_t m = 0; m < M; ++m) {
+      for (size_t n = 0; n < N; ++n) {
+        C[m * C_stride + n] += bias[n];
+      }
+    }
+  }
+}
+
+// A的形状[M,K],B的形状[N,K],C的形状[M,N]
+void matmul_B_transpose_openblas(const float *A, size_t A_stride,
+                                 const float *B, size_t B_stride,
+                                 const float *bias, float *C, size_t C_stride,
+                                 size_t M, size_t N, size_t K) {
+  // C += A * B_trans
+  cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, M, N, K, 1.0f, A,
+              A_stride, B, B_stride,
+              1.0f, // 累加到 C 的原有值
+              C, C_stride);
+
+  // 加上 bias
+  if (bias) {
+    for (size_t m = 0; m < M; ++m) {
+      for (size_t n = 0; n < N; ++n) {
+        C[m * C_stride + n] += bias[n];
+      }
+    }
+  }
+}
+
+// A的形状是[K,M],B的形状是[N,K],C的形状是[M,N]
+void matmul_A_B_transpose_openblas(const float *A, size_t A_stride,
+                                   const float *B, size_t B_stride,
+                                   const float *bias, float *C, size_t C_stride,
+                                   size_t K, size_t M, size_t N) {
+  // C += A_trans * B_trans
+  cblas_sgemm(CblasRowMajor, CblasTrans, CblasTrans, M, N, K, 1.0f, A, A_stride,
+              B, B_stride,
+              1.0f, // 累加到 C 的原有值
+              C, C_stride);
+
+  // 加上 bias
+  if (bias) {
+    for (size_t m = 0; m < M; ++m) {
+      for (size_t n = 0; n < N; ++n) {
+        C[m * C_stride + n] += bias[n];
+      }
+    }
+  }
+}
+
+// A的形状[M, K]，B的形状[K, N]，C的形状[M, N]
+void matmul_native(const float *A, size_t A_stride, const float *B,
+                   size_t B_stride, const float *bias, float *C,
+                   size_t C_stride, size_t M, size_t K, size_t N) {
   for (size_t m = 0; m < M; ++m) {
     for (size_t n = 0; n < N; ++n) {
       float sum = bias ? bias[n] : 0.0f;
@@ -358,9 +443,9 @@ void matmul(const float *A, size_t A_stride, const float *B, size_t B_stride,
 }
 
 // A的形状[K,M],B的形状[K,N],C的形状[M,N]
-void matmul_A_transpose(const float *A, size_t A_stride, const float *B,
-                        size_t B_stride, const float *bias, float *C,
-                        size_t C_stride, size_t K, size_t M, size_t N) {
+void matmul_A_transpose_native(const float *A, size_t A_stride, const float *B,
+                               size_t B_stride, const float *bias, float *C,
+                               size_t C_stride, size_t K, size_t M, size_t N) {
 
   for (size_t m = 0; m < M; ++m) {
     for (size_t n = 0; n < N; ++n) {
@@ -374,9 +459,9 @@ void matmul_A_transpose(const float *A, size_t A_stride, const float *B,
 }
 
 // A的形状[M,K],B的形状[N,K],C的形状[M,N]
-void matmul_B_transpose(const float *A, size_t A_stride, const float *B,
-                        size_t B_stride, const float *bias, float *C,
-                        size_t C_stride, size_t M, size_t N, size_t K) {
+void matmul_B_transpose_native(const float *A, size_t A_stride, const float *B,
+                               size_t B_stride, const float *bias, float *C,
+                               size_t C_stride, size_t M, size_t N, size_t K) {
 
   for (size_t m = 0; m < M; ++m) {
     for (size_t n = 0; n < N; ++n) {
@@ -390,9 +475,10 @@ void matmul_B_transpose(const float *A, size_t A_stride, const float *B,
 }
 
 // A的形状是[K,M],B的形状是[N,K],C的形状是[M,N]
-void matmul_A_B_transpose(const float *A, size_t A_stride, const float *B,
-                          size_t B_stride, const float *bias, float *C,
-                          size_t C_stride, size_t K, size_t M, size_t N) {
+void matmul_A_B_transpose_native(const float *A, size_t A_stride,
+                                 const float *B, size_t B_stride,
+                                 const float *bias, float *C, size_t C_stride,
+                                 size_t K, size_t M, size_t N) {
 
   // m-n-k 循环顺序：直接计算每个C[m,n]的完整值
   for (size_t m = 0; m < M; ++m) {
@@ -404,6 +490,56 @@ void matmul_A_B_transpose(const float *A, size_t A_stride, const float *B,
       C[m * C_stride + n] += sum;
     }
   }
+}
+
+// A的形状[M, K]，B的形状[K, N]，C的形状[M, N]
+void matmul(const float *A, size_t A_stride, const float *B, size_t B_stride,
+            const float *bias, float *C, size_t C_stride, size_t M, size_t K,
+            size_t N) {
+#if USE_OPENBLAS
+  matmul_openblas(A, A_stride, B, B_stride, bias, C, C_stride, M, K, N);
+#else
+  matmul_native(A, A_stride, B, B_stride, bias, C, C_stride, M, K, N);
+#endif
+}
+
+// A的形状[K,M],B的形状[K,N],C的形状[M,N]
+void matmul_A_transpose(const float *A, size_t A_stride, const float *B,
+                        size_t B_stride, const float *bias, float *C,
+                        size_t C_stride, size_t K, size_t M, size_t N) {
+#if USE_OPENBLAS
+  matmul_A_transpose_openblas(A, A_stride, B, B_stride, bias, C, C_stride, K, M,
+                              N);
+#else
+  matmul_A_transpose_native(A, A_stride, B, B_stride, bias, C, C_stride, K, M,
+                            N);
+#endif
+}
+
+// A的形状[M,K],B的形状[N,K],C的形状[M,N]
+void matmul_B_transpose(const float *A, size_t A_stride, const float *B,
+                        size_t B_stride, const float *bias, float *C,
+                        size_t C_stride, size_t M, size_t N, size_t K) {
+#if USE_OPENBLAS
+  matmul_B_transpose_openblas(A, A_stride, B, B_stride, bias, C, C_stride, M, N,
+                              K);
+#else
+  matmul_B_transpose_native(A, A_stride, B, B_stride, bias, C, C_stride, M, N,
+                            K);
+#endif
+}
+
+// A的形状是[K,M],B的形状是[N,K],C的形状是[M,N]
+void matmul_A_B_transpose(const float *A, size_t A_stride, const float *B,
+                          size_t B_stride, const float *bias, float *C,
+                          size_t C_stride, size_t K, size_t M, size_t N) {
+#if USE_OPENBLAS
+  matmul_A_B_transpose_openblas(A, A_stride, B, B_stride, bias, C, C_stride, K,
+                                M, N);
+#else
+  matmul_A_B_transpose_native(A, A_stride, B, B_stride, bias, C, C_stride, K, M,
+                              N);
+#endif
 }
 
 void mat_softmax_forward(float *A, size_t M, size_t N) {

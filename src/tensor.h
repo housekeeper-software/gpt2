@@ -50,7 +50,7 @@ public:
   static Tensor ones(DType dtype, const std::vector<int64_t> &shape);
   static Tensor randn(DType dtype, const std::vector<int64_t> &shape);
   static Tensor rand(DType dtype, const std::vector<int64_t> &shape);
-  static Tensor zeros_like(const Tensor& other);
+  static Tensor zeros_like(const Tensor &other);
 
   uint8_t *data() { return data_; }
 
@@ -133,6 +133,42 @@ void mat_softmax_forward(float *A, size_t M, size_t N);
 // din: 是输入梯度
 void mat_softmax_backward(float *dout, const float *inp, const float *din,
                           size_t M, size_t N);
+
+void matmul_native(const float *A, size_t A_stride, const float *B,
+                   size_t B_stride, const float *bias, float *C,
+                   size_t C_stride, size_t M, size_t K, size_t N);
+
+void matmul_A_transpose_native(const float *A, size_t A_stride, const float *B,
+                               size_t B_stride, const float *bias, float *C,
+                               size_t C_stride, size_t K, size_t M, size_t N);
+
+void matmul_B_transpose_native(const float *A, size_t A_stride, const float *B,
+                               size_t B_stride, const float *bias, float *C,
+                               size_t C_stride, size_t M, size_t N, size_t K);
+
+void matmul_A_B_transpose_native(const float *A, size_t A_stride,
+                                 const float *B, size_t B_stride,
+                                 const float *bias, float *C, size_t C_stride,
+                                 size_t K, size_t M, size_t N);
+
+void matmul_openblas(const float *A, size_t A_stride, const float *B,
+                     size_t B_stride, const float *bias, float *C,
+                     size_t C_stride, size_t M, size_t K, size_t N);
+
+void matmul_A_transpose_openblas(const float *A, size_t A_stride,
+                                 const float *B, size_t B_stride,
+                                 const float *bias, float *C, size_t C_stride,
+                                 size_t K, size_t M, size_t N);
+
+void matmul_B_transpose_openblas(const float *A, size_t A_stride,
+                                 const float *B, size_t B_stride,
+                                 const float *bias, float *C, size_t C_stride,
+                                 size_t M, size_t N, size_t K);
+
+void matmul_A_B_transpose_openblas(const float *A, size_t A_stride,
+                                   const float *B, size_t B_stride,
+                                   const float *bias, float *C, size_t C_stride,
+                                   size_t K, size_t M, size_t N);
 
 } // namespace dense
 

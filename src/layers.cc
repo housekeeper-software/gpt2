@@ -159,10 +159,11 @@ dense::Tensor Embedding::forward(const dense::Tensor &input) {
       // 将 w_ptr 的指针移动到 idx 索引对应的行开始位置
       auto w_idx = w_ptr + idx * C;
       // 将嵌入矩阵的这个特征向量复制给输出
+      std::memcpy(out_bt, w_idx, C * sizeof(float));
+      /*
       for (size_t i = 0; i < C; ++i) {
-        // 这里可用 std::memcpy替代，我们只是展示详细的计算过程
         out_bt[i] = w_idx[i];
-      }
+      }*/
     }
   }
   return output;
