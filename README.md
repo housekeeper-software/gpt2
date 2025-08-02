@@ -1,8 +1,12 @@
 # gpt2
-gpt2的c++最慢最详细的实现，没有使用任何优化，只使用原始的计算方法，以展示transformer推理的详细过程
+gpt2的c++最慢最详细的实现，只使用原始的计算方法，以展示transformer推理的详细过程。  
+矩阵乘法可选支持 OpenBLAS，可以比原始的数值计算方法快几十倍的速度。  
+
 # 依赖
 PCRE2，一个正则表达式开源库，c++标准库中的正则表达式不能完全兼容gpt2的tokennizer表达式，所以引入这个开源库  
 nlohmann::json：json库，用于解析config.json, vocab.json等  
+OpenBLAS: https://github.com/OpenMathLib/OpenBLAS. 可选  
+
 # 模型
 可以从 https://huggingface.co/openai-community/gpt2下载到本地，只支持safetensors模型格式。  
 除此之外，还需要vocab.json,merges.txt,config.json  
@@ -27,7 +31,11 @@ merges.txt：合并规则
 4.支持从头开始训练
 
 # 验证
-gpt2的small,medium,large,xl都验证过。可以正常推理，加上合适的sampling，可以让模型有合理的输出。
+gpt2的small,medium,large,xl都验证过。可以正常推理，加上合适的sampling，可以让模型有合理的输出。  
+
+# 训练  
+因为没有太多的加速优化，一般只能用小数据集训练，为了简单，我们对数据集预先处理，将其转换为 token 再保存起来。  
+在训练时，直接加载这个 token 序列文件，分成批次进行训练。  
 
 # 模型框架图
 https://colab.research.google.com/drive/1MR-i2ZxoMuE-SUkhM8iYwYngXhGYlAEB?usp=sharing
