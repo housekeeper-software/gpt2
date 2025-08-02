@@ -12,6 +12,7 @@ set(PROJECT_SRC_ROOT ${CMAKE_SOURCE_DIR}/src)
 
 add_definitions(-DNOMINMAX -DWIN32_LEAN_AND_MEAN -D_CRT_SECURE_NO_WARNINGS -D_HAS_EXCEPTIONS=0 -DUNICODE -D_UNICODE)
 
+add_definitions(-DUSE_OPENBLAS)
 
 set(PCRE2_USE_STATIC_LIBS ON)
 find_package(PCRE2 CONFIG COMPONENTS 8BIT)
@@ -20,12 +21,23 @@ message(STATUS "PCRE2_FOUND: ${PCRE2_FOUND}")
 message(STATUS "PCRE2_INCLUDE_DIRS: ${PCRE2_INCLUDE_DIR}")
 message(STATUS "PCRE2_LIBRARIES: ${PCRE2_LIBRARIES}")
 
+
+set(DENSE_TENSOR "${THIRD_PARTY_PATH}/tensor/sources")
+
+set(dense_tensor
+    ${DENSE_TENSOR}/safe_tensors.cc
+    ${DENSE_TENSOR}/storage.cc
+    ${DENSE_TENSOR}/tensor.cc
+    ${DENSE_TENSOR}/tensor_string.cc
+)
+
 # 添加你的源代码文件
 # 将你的 .cc 文件列在这里
 file(GLOB_RECURSE SRC ${PROJECT_SRC_ROOT}/*.c*)
 
 # 创建可执行文件
-add_executable(${PROJECT_NAME} ${SRC})
+add_executable(${PROJECT_NAME} ${SRC} ${dense_tensor})
+
 
 # 设置运行时输出目录
 set_target_properties(${PROJECT_NAME} PROPERTIES
@@ -38,8 +50,10 @@ set_property(TARGET ${PROJECT_NAME} PROPERTY VS_DEBUGGER_WORKING_DIRECTORY ${CMA
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE PCRE2_STATIC)
 
+
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    ${PCRE2_LIBRARIES})
+    ${PCRE2_LIBRARIES}
+    ${OPENBLAS_DIR}/lib/libopenblas.lib)
 
 # 添加头文件路径
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -47,4 +61,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${THIRD_PARTY_PATH}/json
     ${PCRE2_INCLUDE_DIR}
     ${DENSE_TENSOR}
+    ${OPENBLAS_DIR}/include
 )
+
+
