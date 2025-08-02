@@ -211,130 +211,150 @@ void test_self_attension() {
 }
 
 void test_all_matmul_functions(size_t M, size_t K, size_t N) {
-    const float EPSILON = 1e-5;
-    bool success = true;
+  const float EPSILON = 1e-5;
+  bool success = true;
 
-    // 内存分配
-    std::vector<float> A_vec(M * K);
-    std::vector<float> B_vec(K * N);
-    std::vector<float> bias_vec(N);
-    std::vector<float> C_openblas_vec(M * N);
-    std::vector<float> C_native_vec(M * N);
+  // 内存分配
+  std::vector<float> A_vec(M * K);
+  std::vector<float> B_vec(K * N);
+  std::vector<float> bias_vec(N);
+  std::vector<float> C_openblas_vec(M * N);
+  std::vector<float> C_native_vec(M * N);
 
-    // 数据初始化
-    std::mt19937 gen(42); // 使用固定种子以确保可重现性
-    std::uniform_real_distribution<float> dis(-1.0f, 1.0f);
-    auto fill_random = [&](std::vector<float>& vec) {
-        for (auto& val : vec) {
-            val = dis(gen);
-        }
-    };
-    fill_random(A_vec);
-    fill_random(B_vec);
-    fill_random(bias_vec);
-
-    // ================== 测试 1: C += A * B ==================
-    std::cout << "Testing C += A * B..." << std::endl;
-    std::fill(C_openblas_vec.begin(), C_openblas_vec.end(), 0.0f);
-    std::fill(C_native_vec.begin(), C_native_vec.end(), 0.0f);
-
-    dense::matmul_openblas(A_vec.data(), K, B_vec.data(), N, bias_vec.data(), C_openblas_vec.data(), N, M, K, N);
-    dense::matmul_native(A_vec.data(), K, B_vec.data(), N, bias_vec.data(), C_native_vec.data(), N, M, K, N);
-
-    for (size_t i = 0; i < M * N; ++i) {
-        if (std::abs(C_openblas_vec[i] - C_native_vec[i]) > EPSILON) {
-            std::cerr << "Test failed for C = A * B at index " << i << std::endl;
-            std::cerr << "OpenBLAS: " << C_openblas_vec[i] << ", Native: " << C_native_vec[i] << std::endl;
-            success = false;
-            break;
-        }
+  // 数据初始化
+  std::mt19937 gen(42); // 使用固定种子以确保可重现性
+  std::uniform_real_distribution<float> dis(-1.0f, 1.0f);
+  auto fill_random = [&](std::vector<float> &vec) {
+    for (auto &val : vec) {
+      val = dis(gen);
     }
-    if (success) {
-        std::cout << "Test passed." << std::endl;
-    }
+  };
+  fill_random(A_vec);
+  fill_random(B_vec);
+  fill_random(bias_vec);
 
-    // ================== 测试 2: C += A_trans * B ==================
-    std::cout << "Testing C += A_trans * B..." << std::endl;
-    std::fill(C_openblas_vec.begin(), C_openblas_vec.end(), 0.0f);
-    std::fill(C_native_vec.begin(), C_native_vec.end(), 0.0f);
-    
-    // 对于 A^T * B，A的形状变为[K, M]，B的形状为[K, N]
-    std::vector<float> A_trans_vec(K * M);
-    for(size_t k = 0; k < K; ++k) {
-        for(size_t m = 0; m < M; ++m) {
-            A_trans_vec[k * M + m] = A_vec[m * K + k];
-        }
-    }
+  // ================== 测试 1: C += A * B ==================
+  std::cout << "Testing C += A * B..." << std::endl;
+  std::fill(C_openblas_vec.begin(), C_openblas_vec.end(), 0.0f);
+  std::fill(C_native_vec.begin(), C_native_vec.end(), 0.0f);
 
-    dense::matmul_A_transpose_openblas(A_trans_vec.data(), M, B_vec.data(), N, bias_vec.data(), C_openblas_vec.data(), N, K, M, N);
-    dense::matmul_A_transpose_native(A_trans_vec.data(), M, B_vec.data(), N, bias_vec.data(), C_native_vec.data(), N, K, M, N);
+  dense::matmul_openblas(A_vec.data(), K, B_vec.data(), N, bias_vec.data(),
+                         C_openblas_vec.data(), N, M, K, N);
+  dense::matmul_native(A_vec.data(), K, B_vec.data(), N, bias_vec.data(),
+                       C_native_vec.data(), N, M, K, N);
 
-    for (size_t i = 0; i < M * N; ++i) {
-        if (std::abs(C_openblas_vec[i] - C_native_vec[i]) > EPSILON) {
-            std::cerr << "Test failed for C = A_trans * B at index " << i << std::endl;
-            success = false;
-            break;
-        }
+  for (size_t i = 0; i < M * N; ++i) {
+    if (std::abs(C_openblas_vec[i] - C_native_vec[i]) > EPSILON) {
+      std::cerr << "Test failed for C = A * B at index " << i << std::endl;
+      std::cerr << "OpenBLAS: " << C_openblas_vec[i]
+                << ", Native: " << C_native_vec[i] << std::endl;
+      success = false;
+      break;
     }
-    if (success) {
-        std::cout << "Test passed." << std::endl;
-    }
+  }
+  if (success) {
+    std::cout << "Test passed." << std::endl;
+  }
 
-    // ================== 测试 3: C += A * B_trans ==================
-    std::cout << "Testing C += A * B_trans..." << std::endl;
-    std::fill(C_openblas_vec.begin(), C_openblas_vec.end(), 0.0f);
-    std::fill(C_native_vec.begin(), C_native_vec.end(), 0.0f);
+  // ================== 测试 2: C += A_trans * B ==================
+  std::cout << "Testing C += A_trans * B..." << std::endl;
+  std::fill(C_openblas_vec.begin(), C_openblas_vec.end(), 0.0f);
+  std::fill(C_native_vec.begin(), C_native_vec.end(), 0.0f);
 
-    // 对于 A * B^T，A的形状为[M, K]，B的形状变为[N, K]
-    std::vector<float> B_trans_vec(N * K);
-    for(size_t n = 0; n < N; ++n) {
-        for(size_t k = 0; k < K; ++k) {
-            B_trans_vec[n * K + k] = B_vec[k * N + n];
-        }
+  // 对于 A^T * B，A的形状变为[K, M]，B的形状为[K, N]
+  std::vector<float> A_trans_vec(K * M);
+  for (size_t k = 0; k < K; ++k) {
+    for (size_t m = 0; m < M; ++m) {
+      A_trans_vec[k * M + m] = A_vec[m * K + k];
     }
+  }
 
-    dense::matmul_B_transpose_openblas(A_vec.data(), K, B_trans_vec.data(), K, bias_vec.data(), C_openblas_vec.data(), N, M, N, K);
-    dense::matmul_B_transpose_native(A_vec.data(), K, B_trans_vec.data(), K, bias_vec.data(), C_native_vec.data(), N, M, N, K);
+  dense::matmul_A_transpose_openblas(A_trans_vec.data(), M, B_vec.data(), N,
+                                     bias_vec.data(), C_openblas_vec.data(), N,
+                                     K, M, N);
+  dense::matmul_A_transpose_native(A_trans_vec.data(), M, B_vec.data(), N,
+                                   bias_vec.data(), C_native_vec.data(), N, K,
+                                   M, N);
 
-    for (size_t i = 0; i < M * N; ++i) {
-        if (std::abs(C_openblas_vec[i] - C_native_vec[i]) > EPSILON) {
-            std::cerr << "Test failed for C = A * B_trans at index " << i << std::endl;
-            success = false;
-            break;
-        }
+  for (size_t i = 0; i < M * N; ++i) {
+    if (std::abs(C_openblas_vec[i] - C_native_vec[i]) > EPSILON) {
+      std::cerr << "Test failed for C = A_trans * B at index " << i
+                << std::endl;
+      success = false;
+      break;
     }
-    if (success) {
-        std::cout << "Test passed." << std::endl;
-    }
+  }
+  if (success) {
+    std::cout << "Test passed." << std::endl;
+  }
 
-    // ================== 测试 4: C += A_trans * B_trans ==================
-    std::cout << "Testing C += A_trans * B_trans..." << std::endl;
-    std::fill(C_openblas_vec.begin(), C_openblas_vec.end(), 0.0f);
-    std::fill(C_native_vec.begin(), C_native_vec.end(), 0.0f);
-    
-    // 对于 A^T * B^T，A的形状为[K, M]，B的形状为[N, K]
-    dense::matmul_A_B_transpose_openblas(A_trans_vec.data(), M, B_trans_vec.data(), K, bias_vec.data(), C_openblas_vec.data(), N, K, M, N);
-    dense::matmul_A_B_transpose_native(A_trans_vec.data(), M, B_trans_vec.data(), K, bias_vec.data(), C_native_vec.data(), N, K, M, N);
+  // ================== 测试 3: C += A * B_trans ==================
+  std::cout << "Testing C += A * B_trans..." << std::endl;
+  std::fill(C_openblas_vec.begin(), C_openblas_vec.end(), 0.0f);
+  std::fill(C_native_vec.begin(), C_native_vec.end(), 0.0f);
 
-    for (size_t i = 0; i < M * N; ++i) {
-        if (std::abs(C_openblas_vec[i] - C_native_vec[i]) > EPSILON) {
-            std::cerr << "Test failed for C = A_trans * B_trans at index " << i << std::endl;
-            success = false;
-            break;
-        }
+  // 对于 A * B^T，A的形状为[M, K]，B的形状变为[N, K]
+  std::vector<float> B_trans_vec(N * K);
+  for (size_t n = 0; n < N; ++n) {
+    for (size_t k = 0; k < K; ++k) {
+      B_trans_vec[n * K + k] = B_vec[k * N + n];
     }
-    if (success) {
-        std::cout << "Test passed." << std::endl;
-    }
+  }
 
-    if (success) {
-        std::cout << "All tests passed for dimensions M=" << M << ", K=" << K << ", N=" << N << std::endl;
-    } else {
-        std::cerr << "Some tests failed for dimensions M=" << M << ", K=" << K << ", N=" << N << std::endl;
+  dense::matmul_B_transpose_openblas(A_vec.data(), K, B_trans_vec.data(), K,
+                                     bias_vec.data(), C_openblas_vec.data(), N,
+                                     M, N, K);
+  dense::matmul_B_transpose_native(A_vec.data(), K, B_trans_vec.data(), K,
+                                   bias_vec.data(), C_native_vec.data(), N, M,
+                                   N, K);
+
+  for (size_t i = 0; i < M * N; ++i) {
+    if (std::abs(C_openblas_vec[i] - C_native_vec[i]) > EPSILON) {
+      std::cerr << "Test failed for C = A * B_trans at index " << i
+                << std::endl;
+      success = false;
+      break;
     }
+  }
+  if (success) {
+    std::cout << "Test passed." << std::endl;
+  }
+
+  // ================== 测试 4: C += A_trans * B_trans ==================
+  std::cout << "Testing C += A_trans * B_trans..." << std::endl;
+  std::fill(C_openblas_vec.begin(), C_openblas_vec.end(), 0.0f);
+  std::fill(C_native_vec.begin(), C_native_vec.end(), 0.0f);
+
+  // 对于 A^T * B^T，A的形状为[K, M]，B的形状为[N, K]
+  dense::matmul_A_B_transpose_openblas(A_trans_vec.data(), M,
+                                       B_trans_vec.data(), K, bias_vec.data(),
+                                       C_openblas_vec.data(), N, K, M, N);
+  dense::matmul_A_B_transpose_native(A_trans_vec.data(), M, B_trans_vec.data(),
+                                     K, bias_vec.data(), C_native_vec.data(), N,
+                                     K, M, N);
+
+  for (size_t i = 0; i < M * N; ++i) {
+    if (std::abs(C_openblas_vec[i] - C_native_vec[i]) > EPSILON) {
+      std::cerr << "Test failed for C = A_trans * B_trans at index " << i
+                << std::endl;
+      success = false;
+      break;
+    }
+  }
+  if (success) {
+    std::cout << "Test passed." << std::endl;
+  }
+
+  if (success) {
+    std::cout << "All tests passed for dimensions M=" << M << ", K=" << K
+              << ", N=" << N << std::endl;
+  } else {
+    std::cerr << "Some tests failed for dimensions M=" << M << ", K=" << K
+              << ", N=" << N << std::endl;
+  }
 }
 
-//#define INFERENCE
+// #define INFERENCE
 
 int main() {
 #if 0
@@ -428,8 +448,16 @@ int main() {
   LogSoftmaxCrossEntropyLoss loss;
   AdamW optimizer;
   gpt.init_weights();
-  train(&gpt, &train_data_loader, &test_data_loader, &loss, &optimizer, 10,
-        save_model_dir, 16);
+
+  CosineAnnealingWarmRestarts scheduler(optimizer.get_learning_rate(), 10, 1,
+                                        1e-6);
+  TrainingArguments args;
+  args.epochs = 100;
+  args.accumulation_steps = 16;
+  args.max_grad_norm = 1.0f;
+  args.patience = 10;
+  train(&gpt, save_model_dir, &train_data_loader, &test_data_loader, &loss,
+        &optimizer, &scheduler, args);
 #endif
   return 0;
 }

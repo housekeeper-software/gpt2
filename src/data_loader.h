@@ -30,6 +30,9 @@ public:
              bool shuffle);
   ~DataLoader() = default;
   size_t bacth_size() const { return batch_size_; }
+  size_t size() const {
+    return (dataset_->size() + batch_size_ - 1) / batch_size_;
+  }
 
   class Iterator {
   private:
