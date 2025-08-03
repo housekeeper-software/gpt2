@@ -1,4 +1,5 @@
 #include "training.h"
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <sstream>
@@ -81,6 +82,13 @@ void clip_gradients(ParamsAndGrads &params_and_grads, float max_norm) {
     }
   }
 }
+
+void WriteLog(const std::string &dir, const std::string &str) {
+  std::string filename = dir + "/train.log";
+  FILE *fp = fopen(filename.c_str(), "a");
+  fprintf(fp, "%s\n", str.c_str());
+  fclose(fp);
+}
 } // namespace
 
 std::map<std::string, std::vector<double>>
@@ -128,20 +136,26 @@ train(GPT *model, const std::string &model_dir, DataLoader *train_data_loader,
       accumulated_loss += loss;
       batch_count++;
 
+      double current_epoch_progress =
+          static_cast<double>(epoch) +
+          (static_cast<double>(batch_count) / total_train_batches);
+
+      scheduler->step(current_epoch_progress);
+      auto lr = scheduler->get_lr();
+      optimizer->set_learning_rate(lr);
+
+      {
+        char buf[1024] = {0};
+        sprintf(buf, "Epoch:%d, Batch:%d,Loss: %.8f,LR: %.8f", epoch + 1,
+                batch_count, loss, lr);
+        WriteLog(model_dir, buf);
+      }
+
       std::cout << "Epoch:" << epoch + 1 << ",Batch:" << batch_count
-                << ", Training Loss: " << loss << std::endl;
+                << ", Training Loss: " << loss << ", LR: " << std::fixed
+                << std::setprecision(8) << lr << std::endl;
 
       if (batch_count % args.accumulation_steps == 0) {
-
-        double current_epoch_progress =
-            static_cast<double>(epoch) +
-            (static_cast<double>(batch_count) / total_train_batches);
-
-        scheduler->step(current_epoch_progress);
-        optimizer->set_learning_rate(scheduler->get_lr());
-
-        std::cout << "Epoch " << epoch + 1 << "/" << args.epochs
-                  << ", LR: " << optimizer->get_learning_rate() << std::endl;
 
         ParamsAndGrads params_and_grads;
         model->get_params_and_grads(params_and_grads);
@@ -154,6 +168,13 @@ train(GPT *model, const std::string &model_dir, DataLoader *train_data_loader,
 
         running_loss += accumulated_loss / args.accumulation_steps;
 
+        {
+          char buf[1024] = {0};
+          sprintf(buf, "Epoch:%d, Batch:%d,Loss (accumulated): %.8f", epoch + 1,
+                  batch_count, accumulated_loss / args.accumulation_steps);
+          WriteLog(model_dir, buf);
+        }
+
         std::cout << "Epoch:" << epoch + 1 << ",Batch:" << batch_count
                   << ", Training Loss (accumulated): "
                   << accumulated_loss / args.accumulation_steps << std::endl;
@@ -165,15 +186,6 @@ train(GPT *model, const std::string &model_dir, DataLoader *train_data_loader,
 
     // 处理最后一个不完整的梯度累积批次
     if (batch_count % args.accumulation_steps != 0) {
-      double current_epoch_progress =
-          static_cast<double>(epoch) +
-          (static_cast<double>(batch_count) / total_train_batches);
-      scheduler->step(current_epoch_progress);
-      optimizer->set_learning_rate(scheduler->get_lr());
-
-      std::cout << "Epoch " << epoch + 1 << "/" << args.epochs
-                << ", LR: " << optimizer->get_learning_rate() << std::endl;
-
       ParamsAndGrads params_and_grads;
       model->get_params_and_grads(params_and_grads);
       clip_gradients(params_and_grads, args.max_grad_norm);
@@ -181,6 +193,17 @@ train(GPT *model, const std::string &model_dir, DataLoader *train_data_loader,
       model->clear_grads();
       running_loss +=
           accumulated_loss / (batch_count % args.accumulation_steps);
+
+      {
+        char buf[1024] = {0};
+        sprintf(buf, "Epoch:%d, Batch:%d,Loss (accumulated): %.8f", epoch + 1,
+                batch_count, accumulated_loss / args.accumulation_steps);
+        WriteLog(model_dir, buf);
+      }
+
+      std::cout << "Epoch:" << epoch + 1 << ",Batch:" << batch_count
+                << ", Training Loss (accumulated): "
+                << accumulated_loss / args.accumulation_steps << std::endl;
     }
 
     double avg_train_loss = running_loss / batch_count;
