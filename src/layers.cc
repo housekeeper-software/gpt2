@@ -1278,6 +1278,7 @@ CosineAnnealingWarmRestarts::CosineAnnealingWarmRestarts(double initial_lr,
   if (T_mult < 1) {
     throw std::invalid_argument("T_mult 必须是大于等于 1 的整数.");
   }
+  step();
 }
 
 void CosineAnnealingWarmRestarts::step(std::optional<double> epoch) {
@@ -1290,7 +1291,7 @@ void CosineAnnealingWarmRestarts::step(std::optional<double> epoch) {
     current_epoch = last_epoch_ + 1;
     T_cur_ = T_cur_ + 1;
     if (T_cur_ >= T_i_) {
-      T_cur_ = T_cur_ % T_i_;
+      T_cur_ = T_cur_ - T_i_;
       T_i_ = T_i_ * T_mult_;
     }
   } else {
@@ -1301,24 +1302,25 @@ void CosineAnnealingWarmRestarts::step(std::optional<double> epoch) {
     }
     if (current_epoch >= T_0_) {
       if (T_mult_ == 1) {
-        T_cur_ = static_cast<int>(std::floor(current_epoch)) % T_0_;
+        T_cur_ = fmod(current_epoch, T_0_);
       } else {
         double term = current_epoch / T_0_ * (T_mult_ - 1) + 1;
         double log_base_T_mult =
             std::log(term) / std::log(static_cast<double>(T_mult_));
         int n = static_cast<int>(std::floor(log_base_T_mult));
 
-        long long sum_of_previous_cycles =
-            static_cast<long long>(T_0_) *
-            (static_cast<long long>(std::pow(T_mult_, n)) - 1) / (T_mult_ - 1);
+        double sum_of_previous_cycles =
+            static_cast<double>(T_0_) *
+            (static_cast<double>(std::pow(static_cast<double>(T_mult_), n)) -
+             1) /
+            (T_mult_ - 1);
 
-        T_cur_ = static_cast<int>(current_epoch -
-                                  static_cast<double>(sum_of_previous_cycles));
+        T_cur_ = current_epoch - static_cast<double>(sum_of_previous_cycles);
         T_i_ = T_0_ * static_cast<int>(std::pow(T_mult_, n));
       }
     } else {
       T_i_ = T_0_;
-      T_cur_ = static_cast<int>(std::floor(current_epoch));
+      T_cur_ = current_epoch;
     }
   }
   last_epoch_ = std::floor(current_epoch);

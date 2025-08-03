@@ -449,7 +449,7 @@ int main() {
   AdamW optimizer;
   gpt.init_weights();
 
-  CosineAnnealingWarmRestarts scheduler(optimizer.get_learning_rate(), 10, 1,
+  CosineAnnealingWarmRestarts scheduler(optimizer.get_learning_rate(), 10, 2,
                                         1e-6);
   TrainingArguments args;
   args.epochs = 100;

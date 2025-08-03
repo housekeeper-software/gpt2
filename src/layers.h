@@ -315,7 +315,8 @@ public:
 private:
   int T_0_;    // 初始周期长度
   int T_mult_; // 周期长度乘数
-  int T_cur_;  // 当前周期的 epoch 计数，注意这里依然使用 int，因为它是步进计数
+  double
+      T_cur_; // 当前周期的 epoch 计数，注意这里依然使用 int，因为它是步进计数
   double eta_min_;    // 最小学习率
   double initial_lr_; // 原始初始学习率
   double last_epoch_; // 总的 epoch 计数，改为 double 以支持浮点数

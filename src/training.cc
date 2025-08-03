@@ -95,13 +95,7 @@ train(GPT *model, const std::string &model_dir, DataLoader *train_data_loader,
 
   model->enable_training(true); // 确保模型处于训练模式
 
-  double total_train_batches =
-      static_cast<double>(train_data_loader->size());
-
-  int total_batches_processed = 0; // 追踪总处理的 batch 数
-
-  scheduler->step();
-  optimizer->set_learning_rate(scheduler->get_lr());
+  double total_train_batches = static_cast<double>(train_data_loader->size());
 
   // 2. 主训练循环 (按 Epoch)
   for (int epoch = 0; epoch < args.epochs; ++epoch) {
@@ -133,7 +127,6 @@ train(GPT *model, const std::string &model_dir, DataLoader *train_data_loader,
 
       accumulated_loss += loss;
       batch_count++;
-      total_batches_processed++;
 
       std::cout << "Epoch:" << epoch + 1 << ",Batch:" << batch_count
                 << ", Training Loss: " << loss << std::endl;
@@ -141,7 +134,9 @@ train(GPT *model, const std::string &model_dir, DataLoader *train_data_loader,
       if (batch_count % args.accumulation_steps == 0) {
 
         double current_epoch_progress =
-            static_cast<double>(total_batches_processed) / total_train_batches;
+            static_cast<double>(epoch) +
+            (static_cast<double>(batch_count) / total_train_batches);
+
         scheduler->step(current_epoch_progress);
         optimizer->set_learning_rate(scheduler->get_lr());
 
@@ -171,7 +166,8 @@ train(GPT *model, const std::string &model_dir, DataLoader *train_data_loader,
     // 处理最后一个不完整的梯度累积批次
     if (batch_count % args.accumulation_steps != 0) {
       double current_epoch_progress =
-          static_cast<double>(total_batches_processed) / total_train_batches;
+          static_cast<double>(epoch) +
+          (static_cast<double>(batch_count) / total_train_batches);
       scheduler->step(current_epoch_progress);
       optimizer->set_learning_rate(scheduler->get_lr());
 
